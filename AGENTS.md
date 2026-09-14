@@ -1,79 +1,111 @@
 # AGENTS.md — FoveaStream integration contract
 
-This file is the durable handoff for coding agents integrating FoveaStream into another application or transport. Do not depend on chat history.
+This is the durable handoff for coding agents. Do not depend on chat history.
 
-## Product goal
+## Product boundary
 
-FoveaStream is a transport/provider-agnostic predictive foveation runtime for machine vision. It reduces bytes, pixels, visual tokens and edge compute while preserving task-relevant spatial detail.
+FoveaStream is a provider-agnostic frame optimization/relevance middleware for machine vision.
 
-The core contract is:
+The preferred integration shape is:
 
 ```text
-arbitrary frame source + arbitrary relevance evidence
-        -> persistent multi-ROI state
-        -> quality field + payload alternatives + send/skip decision
-        -> arbitrary consumer/transport/model
+existing frame source
+        |
+        v
+FramePacket
+        |
+        v
+FoveaStreamTransform / StreamMiddleware
+        |
+        v
+OptimizedFrame / ProcessResult
+        |
+        v
+existing encoder / transport / model / callback
 ```
 
-Do NOT make the core depend on Gemini, OpenAI, WebRTC, GStreamer, CameraX, AVFoundation, Meta APIs, a particular detector class, or a particular vision model.
+The core must NOT depend on Gemini, OpenAI, WebRTC, GStreamer, CameraX, AVFoundation, Meta APIs, one detector class, one camera vendor, or one vision model.
 
-## Start here
-
-Read, in order:
+## Read first
 
 1. `README.md`
-2. `docs/AGENT_INTEGRATION.md`
-3. `docs/STATUS.md`
-4. `docs/REALTIME_STREAMING_STATUS.md`
-5. `docs/PREDICTIVE_ATTENTION_ARCHITECTURE.md`
+2. `docs/FRAME_MIDDLEWARE.md`
+3. `docs/AGENT_INTEGRATION.md`
+4. `docs/STATUS.md`
+5. `docs/REALTIME_STREAMING_STATUS.md`
+6. `docs/PREDICTIVE_ATTENTION_ARCHITECTURE.md`
 
-Install the Python reference/integration layer:
+## Install / validate
 
 ```bash
 python -m venv .venv
 # Windows: .\.venv\Scripts\Activate.ps1
 # Linux/macOS: source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
-```
-
-Native validation:
-
-```bash
+pytest -q
 cargo test --all-targets
 cargo build --release
-pytest -q
 ```
 
-## Python integration: minimum path
+## Primary Python integration
+
+For an existing synchronous frame loop:
 
 ```python
-from foveastream import FoveaStreamRuntime, StreamRuntimeConfig, CallbackSink
+from foveastream import FoveaStreamTransform
 
-runtime = FoveaStreamRuntime(StreamRuntimeConfig(auto_motion_proposals=True))
+optimizer = FoveaStreamTransform(
+    preset="aggressive",
+    auto_motion_proposals=True,
+    emit_policy="every_frame",
+)
 
-# frame_rgb: uint8 HxWx3 RGB
-result = runtime.process(frame_rgb, timestamp_s)
-
-if result.decision.send:
-    # Choose whichever representation your downstream consumer supports.
-    full_frame = result.foveated_frame
-    context = result.context
-    roi_images = result.roi_views
-    qp_map = result.qp_map
+frame = camera.read()
+optimized = optimizer.transform(frame, timestamp_s)
+downstream.send(optimized.frame_rgb)
 ```
 
-For a push/callback workflow:
+`optimized.frame_rgb` is the same width/height as the submitted frame. The complete runtime state is available as `optimized.result`.
+
+For callback-driven capture:
 
 ```python
-sink = CallbackSink(lambda result: my_transport(result), only_when_send=True)
-runtime.push(frame_rgb, timestamp_s, sink)
+from foveastream import CallbackFrameSink, RealtimeBridge
+
+sink = CallbackFrameSink(lambda packet: downstream.send(packet.frame_rgb))
+bridge = RealtimeBridge(
+    optimizer,
+    sink,
+    queue_size=1,
+    drop_policy="latest",
+)
+
+camera.on_frame(lambda frame, ts: bridge.submit(frame, ts))
 ```
 
-The sink owns provider/transport-specific encoding and I/O. Do not add provider credentials or provider SDKs to FoveaStream core.
+The latest-frame queue is deliberate: realtime camera pipelines must not accumulate stale frames and grow latency when capture FPS exceeds processing FPS.
+
+## Emit-policy invariant
+
+`every_frame` is the default and is the safe mode for continuous camera/video/encoder paths.
+
+`when_send` is opt-in for request/event pipelines where redundant frames may be suppressed:
+
+```python
+optimizer = FoveaStreamTransform(emit_policy="when_send")
+```
+
+Do not silently apply SEND/SKIP to a transport that requires continuous cadence.
+
+## `FramePacket` metadata
+
+`FramePacket.metadata` is opaque and must be preserved through the middleware. Source adapters may store camera IDs, frame IDs, RTP timestamps, tracing IDs or platform handles there.
+
+Do not teach FoveaStream core about provider-specific metadata.
 
 ## External ROI evidence
 
-An ROI is NOT a semantic class. It means only: "this spatial support is currently more valuable to the downstream task".
+An ROI is NOT a semantic class. It means only: spatial support whose loss of detail would disproportionately harm the current downstream task.
 
 Any subsystem may emit `RoiProposal`:
 
@@ -81,133 +113,122 @@ Any subsystem may emit `RoiProposal`:
 - residual motion;
 - saliency;
 - detector or segmenter output;
-- hand-object interaction;
+- hand/object interaction;
 - depth/autofocus;
 - OCR/text proposal;
-- task-specific rules;
+- task-specific logic;
 - downstream model feedback;
-- a remote controller;
-- a future learned relevance model.
+- remote operator/controller;
+- future learned relevance model.
 
 Example:
 
 ```python
-from foveastream import Roi, RoiProposal
+from foveastream import FramePacket, Roi, RoiProposal
 
-proposals = [
-    RoiProposal(Roi(.10, .20, .18, .16), confidence=.95, priority=2.0, source="task-A"),
-    RoiProposal(Roi(.65, .55, .20, .22), confidence=.80, priority=1.0, source="external-detector"),
-]
-result = runtime.process(frame_rgb, timestamp_s, proposals=proposals)
+packet = FramePacket(
+    frame_rgb=frame,
+    timestamp_s=timestamp_s,
+    metadata={"camera": "left"},
+    proposals=(
+        RoiProposal(Roi(.10, .20, .18, .16), confidence=.95, priority=2.0, source="task"),
+        RoiProposal(Roi(.65, .55, .20, .22), confidence=.80, priority=1.0, source="detector"),
+    ),
+)
+optimized = optimizer.process(packet)
 ```
 
-Multiple proposal sources may overlap. `MultiRoiTracker` deduplicates, associates and temporally propagates them, maintains independent track IDs, expands stale/uncertain support, and selects active ROIs under `pixel_budget_fraction`.
+Multiple proposal sources may overlap. `MultiRoiTracker` deduplicates, associates, predicts and budgets them. Do not replace this abstraction with hardcoded face/person/car recognition in core.
 
-Do not replace this abstraction with hardcoded face/person/car recognition in the core.
+## Native Rust integration
 
-## Rust/native integration
-
-Use:
-
-- `RoiProposal`
-- `MultiRoiTracker`
-- `StreamRuntime`
-- `FrameInput`
-- `ProcessResult`
-- `StreamSink`
-
-Minimal shape:
+Use `StreamMiddleware` as the drop-in native wrapper:
 
 ```rust
-let mut runtime = StreamRuntime::new(StreamRuntimeConfig::default());
-let result = runtime.process_rgb8(
+use foveastream::{EmitPolicy, FrameInput, InnovationSignals, StreamMiddleware};
+
+let mut optimizer = StreamMiddleware::aggressive();
+optimizer.set_emit_policy(EmitPolicy::EveryFrame);
+
+let output = optimizer.process_rgb8(
     FrameInput { rgb8: frame, width, height, timestamp_s },
     &proposals,
     &points,
-    signals,
+    InnovationSignals::default(),
 )?;
 
-if result.should_send() {
-    transport.send(&result)?;
+if let Some(result) = output {
+    downstream.send(&result.foveated_rgb8)?;
 }
 ```
 
-The native runtime is synchronous and causal. For production applications, the host should own capture threads, bounded queues, backpressure and transport threads rather than hiding platform-specific threading inside the core.
+The native core remains synchronous. Platform capture threads, bounded queues, backpressure, encoder threads and sockets belong to the host application/adapters.
 
 ## Output representations
 
-`ProcessResult` intentionally exposes multiple actuators because different consumers benefit from different payloads:
+The attached `ProcessResult` intentionally exposes multiple actuators:
 
-- `foveated_frame` / `foveated_rgb8`: same-size image suitable for ordinary image/video encoders;
-- `context + roi_views`: low-resolution global context plus one or more high-resolution ROIs for image/VLM APIs;
-- `quality_map`: continuous spatial relevance/fidelity map;
-- `qp_map`: encoder block delta-QP policy;
-- `decision`: SEND/SKIP scheduling decision;
-- `rois/tracks`: metadata for custom transports, overlays, tiling, logging or model prompts.
+- same-size `foveated_frame` / `foveated_rgb8` for ordinary frame pipelines;
+- `context + roi_views` for multi-image VLM/API paths;
+- `quality_map` for custom spatial fidelity control;
+- `qp_map` for encoders exposing block/ROI QP controls;
+- `decision` for optional SEND/SKIP request suppression;
+- `rois/tracks` for custom tiling, metadata, overlays and model prompting.
 
-Do not force all consumers through the same representation.
-
-## Streaming adapter rule
-
-A downstream adapter should be thin:
-
-```text
-FoveaStream ProcessResult
-      -> adapter-specific serialization/encode
-      -> WebSocket / HTTP / WebRTC / RTP / gRPC / queue / local inference / shared memory
-```
-
-Provider-specific frame-rate limits, authentication, MIME types, connection lifetime and retry behavior belong in that adapter, not in the FoveaStream runtime.
+Do not force every consumer through the same actuator.
 
 ## Multi-rate rule
 
-Never assume capture FPS == analysis FPS == output/model FPS.
+Never assume capture FPS == optimizer FPS == output/model FPS.
 
 Example:
 
 ```text
 camera:      60 FPS
-local ROI:   60 FPS
+optimizer:   30-60 FPS depending on device/path
 IMU:        200 Hz
-output:       5 FPS or event-driven
-model:        1-5 requests/s
+model:        1-10 requests/s or event-driven
 ```
 
-The local state may update on every frame while the scheduler emits only selected frames.
+For asynchronous camera capture, keep queues bounded. Prefer newest-state processing to unbounded backlog for latency-sensitive perception.
 
 ## Performance rule
 
-Python/OpenCV is the reference, benchmark and integration layer. Production hot paths should prefer the Rust/native core, YUV/NV12 buffers, coarse encoder-block quality fields, zero/low-copy platform buffers and hardware encoder ROI/QP controls where available.
+Python/OpenCV is the reference, benchmark and integration layer. Production hot paths should progressively use:
 
-Do not claim production zero-copy or hardware-encoder integration unless the actual platform adapter exists and is benchmarked.
+- Rust/native core;
+- YUV/NV12 instead of RGB round trips;
+- coarse encoder-block quality fields;
+- zero/low-copy platform buffers;
+- hardware encoder ROI/QP controls where available.
 
-## Demo / regression commands
+Do not claim zero-copy/hardware encoder support until an actual platform adapter is implemented and measured.
 
-Single/multi-ROI real-video demo:
+## Demo / regression
 
 ```bash
+python examples/live_webcam.py --preset aggressive
+python examples/custom_sink_adapter.py
 python bench/real_video_visualization.py example1.mp4 --outdir output --preset aggressive
+pytest -q
+cargo test --all-targets
+cargo build --release
 ```
-
-More ROI capacity:
-
-```bash
-python bench/real_video_visualization.py example1.mp4 --outdir output --preset aggressive --max-rois 10 --roi-budget-fraction 0.30
-```
-
-The generated `*_visualization.mp4` must show every active ROI and the foveated result.
 
 ## Engineering invariants
 
-- Preserve global context unless the caller explicitly selects a crop-only mode.
-- An ROI set may contain zero, one or many regions.
-- Uncertainty must spend bandwidth rather than silently crop away a target.
-- Keep proposal generation replaceable.
-- Keep transport/provider code outside the core.
+- Source and sink stay replaceable.
+- Preserve source timestamps and metadata.
 - Use monotonic timestamps.
-- Avoid independent stateless per-frame crops; preserve temporal state.
-- Prefer zero bytes (skip) over compressed bytes when the frame is redundant.
-- Benchmark downstream task quality, not only visual appearance or byte savings.
+- Preserve temporal state; do not instantiate the runtime per frame.
+- Zero/one/many ROIs are all valid.
+- ROI pixel budget is a hard cap.
+- Uncertainty spends bandwidth instead of silently losing the target.
+- `EveryFrame` is the safe default for continuous video.
+- `WhenSend` is explicit and opt-in.
+- Realtime queues are bounded; no unbounded frame backlog.
+- Keep provider auth/network/model SDKs outside core.
+- Benchmark downstream task quality, not only visual appearance/bytes.
 
 ## Before handing work to another agent
 
@@ -217,6 +238,6 @@ Update `docs/STATUS.md` with:
 - what is actually implemented;
 - tests/CI status;
 - known limitations;
-- next concrete engineering steps.
+- precise next engineering steps.
 
 Never mark untested platform support as complete.
