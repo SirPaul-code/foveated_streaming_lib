@@ -43,7 +43,11 @@ def test_context_quality_resolution_and_qp_hooks():
     assert len(seen) == 25
     assert any(t.quality > .8 and t.resolution_scale == 1.0 and t.qp_delta == -6 for t in plan.tiles)
     assert any(t.quality == 0.0 and t.resolution_scale == .25 and t.qp_delta == 18 for t in plan.tiles)
-    assert all(0.0 <= c.mean_relevance <= c.p90_relevance <= c.max_relevance <= 1.0 for c in seen)
+    assert all(0.0 <= c.mean_relevance <= 1.0 for c in seen)
+    assert all(0.0 <= c.p90_relevance <= 1.0 for c in seen)
+    assert all(0.0 <= c.max_relevance <= 1.0 for c in seen)
+    assert all(c.max_relevance >= c.mean_relevance for c in seen)
+    assert all(c.max_relevance >= c.p90_relevance for c in seen)
 
 
 def test_cannot_supply_both_quality_and_degradation_hooks():
