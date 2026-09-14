@@ -145,7 +145,7 @@ from .middleware import (
 )
 
 # Logical multi-resolution tile planning. This is separate from codec-native block QP maps:
-# applications may request exactly N transport tiles and choose/customize the degradation curve.
+# applications may request exactly N transport tiles and customize quality/scale/QP independently.
 from .tiles import (
     TileAggregation,
     TileCurve,
@@ -154,6 +154,10 @@ from .tiles import (
     TilePlan,
     TilePlanner,
     TilePlannerConfig,
+    TilePolicyContext,
+    TileQualityFn,
+    TileResolutionFn,
+    TileQpFn,
     plan_tiles,
     rasterize_tile_plan,
     render_tile_plan,
