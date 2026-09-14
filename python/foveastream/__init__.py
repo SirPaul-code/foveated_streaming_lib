@@ -144,6 +144,21 @@ from .middleware import (
     transform_source,
 )
 
+# Logical multi-resolution tile planning. This is separate from codec-native block QP maps:
+# applications may request exactly N transport tiles and choose/customize the degradation curve.
+from .tiles import (
+    TileAggregation,
+    TileCurve,
+    TileDecision,
+    TileDegradationFn,
+    TilePlan,
+    TilePlanner,
+    TilePlannerConfig,
+    plan_tiles,
+    rasterize_tile_plan,
+    render_tile_plan,
+)
+
 # Higher-level adaptive transport actuators built on the same relevance state/runtime.
 from .optimization import (
     AdaptiveBudgetConfig,

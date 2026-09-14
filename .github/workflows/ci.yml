@@ -31,3 +31,9 @@ jobs:
         run: python -m pip install -e '.[dev]'
       - name: tests
         run: pytest -q
+      - name: CLI smoke checks
+        run: |
+          python -m py_compile python/foveastream/tiles.py examples/adaptive_transport.py examples/generate_showcase.py bench/benchmark_suite.py bench/benchmark_transport_stack.py bench/real_video_visualization.py
+          python examples/adaptive_transport.py --help
+          python examples/generate_showcase.py --help
+          python bench/benchmark_suite.py --help

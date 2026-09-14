@@ -9,6 +9,7 @@ mod resample;
 mod roi;
 mod scheduler;
 mod streaming;
+mod tiles;
 mod transport;
 mod types;
 
@@ -27,6 +28,9 @@ pub use scheduler::{
     AdaptiveScheduler, InnovationSignals, SchedulerConfig, SendDecision, SendReason,
 };
 pub use streaming::{FrameInput, ProcessResult, StreamError, StreamRuntime, StreamRuntimeConfig, StreamSink};
+pub use tiles::{
+    plan_tiles, TileAggregation, TileCurve, TileDecision, TilePlan, TilePlannerConfig,
+};
 pub use transport::{
     analysis_dimensions, signature_rgb8, AdaptiveBudgetConfig, AdaptiveBudgetController,
     AdaptiveBudgetState, CacheDecision, EncoderSpatialHints, EvidenceBus, EvidenceRecord,
