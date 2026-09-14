@@ -12,12 +12,13 @@ algorithm/actuator and the representative settings a developer needs to understa
 - multiple custom policy hook examples;
 - optional user-provided custom degradation/quality/resolution/QP callbacks.
 
-Each policy receives its own folder with MP4, GIF and metrics.json. A top-level INDEX.md and
-report.json make the run browsable and machine-readable.
+Each policy receives its own folder with MP4, GIF and metrics.json. A top-level INDEX.md,
+report.json and tile_policies.csv make the run browsable and machine-readable.
 """
 from __future__ import annotations
 
 import argparse
+import csv
 from dataclasses import dataclass
 import hashlib
 import importlib.util
@@ -68,6 +69,44 @@ def ffmpeg_path() -> str:
     if not exe:
         raise SystemExit("ffmpeg is required; run scripts/setup.ps1 or scripts/setup.sh first")
     return exe
+
+
+def ffmpeg_version(exe: str) -> str:
+    try:
+        proc = subprocess.run([exe, "-version"], capture_output=True, text=True, check=True)
+        return proc.stdout.splitlines()[0].strip() if proc.stdout else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def git_head() -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+        )
+        return proc.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def probe_video(path: Path) -> dict:
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise RuntimeError(f"could not open {path}")
+    try:
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        return {
+            "width": width,
+            "height": height,
+            "fps": fps,
+            "frame_count": frames,
+            "duration_s": frames / fps if fps > 0 else None,
+        }
+    finally:
+        cap.release()
 
 
 def run(cmd: list[str]) -> None:
@@ -167,17 +206,20 @@ def variants(args) -> list[PolicyVariant]:
     out: list[PolicyVariant] = []
     for count in (10, 25, 100, 400):
         out.append(PolicyVariant(
-            "03_tile_counts", f"tiles_{count:04d}_gaussian", f"Exact {count} logical tiles, Gaussian degradation.",
+            "03_tile_counts", f"tiles_{count:04d}_gaussian",
+            f"Exact {count} logical tiles, Gaussian degradation.",
             TilePlannerConfig(target_tiles=count, curve="gaussian", curve_strength=3.0, aggregation="max"),
         ))
     for curve in ("linear", "smoothstep", "gaussian", "exponential", "power"):
         out.append(PolicyVariant(
-            "04_tile_curves", f"curve_{curve}", f"100 logical tiles using the built-in {curve} degradation curve.",
+            "04_tile_curves", f"curve_{curve}",
+            f"100 logical tiles using the built-in {curve} degradation curve.",
             TilePlannerConfig(target_tiles=100, curve=curve, curve_strength=3.0, aggregation="max"),
         ))
     for aggregation in ("mean", "p90", "max"):
         out.append(PolicyVariant(
-            "05_tile_aggregation", f"aggregation_{aggregation}", f"100 Gaussian tiles using {aggregation} relevance aggregation.",
+            "05_tile_aggregation", f"aggregation_{aggregation}",
+            f"100 Gaussian tiles using {aggregation} relevance aggregation.",
             TilePlannerConfig(target_tiles=100, curve="gaussian", curve_strength=3.0, aggregation=aggregation),
         ))
     out.extend([
@@ -189,19 +231,19 @@ def variants(args) -> list[PolicyVariant]:
         ),
         PolicyVariant(
             "06_custom_policies", "custom_focus_cliff",
-            "Simple distance->quality callback that keeps a protected near-relevance plateau then drops aggressively.",
+            "Distance->quality callback that keeps a protected near-relevance plateau then drops aggressively.",
             TilePlannerConfig(target_tiles=100, aggregation="max", min_quality=0.03, min_resolution_scale=0.10),
             degradation_fn=focus_cliff,
         ),
         PolicyVariant(
             "06_custom_policies", "custom_context_aware_quality",
-            "Context-aware quality function using max/p90/mean relevance plus a mild center prior.",
+            "Context-aware quality using max/p90/mean relevance plus a mild center prior.",
             TilePlannerConfig(target_tiles=100, aggregation="max", min_quality=0.03, min_resolution_scale=0.10),
             quality_fn=context_aware_quality,
         ),
         PolicyVariant(
             "06_custom_policies", "custom_stepped_resolution",
-            "Built-in Gaussian quality with custom transport-friendly resolution tiers 1.0/0.5/0.25/0.125.",
+            "Built-in Gaussian quality with resolution tiers 1.0/0.5/0.25/0.125.",
             TilePlannerConfig(target_tiles=100, curve="gaussian", aggregation="max", min_resolution_scale=0.125),
             resolution_fn=stepped_resolution,
         ),
@@ -236,7 +278,7 @@ def variants(args) -> list[PolicyVariant]:
     if any(user_hooks.values()):
         out.append(PolicyVariant(
             "09_user_policy", "user_policy",
-            "User-provided custom tile policy callbacks loaded from FILE.py:function CLI arguments.",
+            "User-provided custom tile callbacks loaded from FILE.py:function CLI arguments.",
             TilePlannerConfig(
                 target_tiles=args.user_tiles,
                 curve=args.user_fallback_curve,
@@ -266,8 +308,10 @@ def mp4_to_gif(ffmpeg: str, src: Path, dst: Path, fps: float, width: int) -> Non
         "split[s0][s1];[s0]palettegen=max_colors=128[p];"
         "[s1][p]paletteuse=dither=bayer:bayer_scale=5"
     )
-    subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", str(src),
-                    "-filter_complex", vf, "-loop", "0", str(dst)], check=True)
+    subprocess.run([
+        ffmpeg, "-y", "-loglevel", "error", "-i", str(src),
+        "-filter_complex", vf, "-loop", "0", str(dst),
+    ], check=True)
 
 
 def panel(frame_rgb: np.ndarray, plan, title: str, detail: str, output_width: int) -> np.ndarray:
@@ -275,15 +319,23 @@ def panel(frame_rgb: np.ndarray, plan, title: str, detail: str, output_width: in
     heat = render_tile_plan(frame_rgb, plan, alpha=0.48, show_labels=False)
     left = cv2.cvtColor(degraded, cv2.COLOR_RGB2BGR)
     right = cv2.cvtColor(heat, cv2.COLOR_RGB2BGR)
-    h, w = left.shape[:2]
     combined = np.concatenate([left, right], axis=1)
     cv2.rectangle(combined, (0, 0), (combined.shape[1], 64), (0, 0, 0), -1)
     cv2.putText(combined, title, (14, 25), cv2.FONT_HERSHEY_SIMPLEX, .62, (255,255,255), 2, cv2.LINE_AA)
     cv2.putText(combined, detail, (14, 51), cv2.FONT_HERSHEY_SIMPLEX, .42, (220,220,220), 1, cv2.LINE_AA)
     if combined.shape[1] > output_width:
         scale = output_width / combined.shape[1]
-        combined = cv2.resize(combined, (output_width, max(2, round(combined.shape[0] * scale))), interpolation=cv2.INTER_AREA)
-    return combined
+        combined = cv2.resize(
+            combined,
+            (output_width, max(2, round(combined.shape[0] * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+    # libx264/yuv420p needs even raster dimensions. Keep this invariant for arbitrary source sizes.
+    even_w = max(2, combined.shape[1] - (combined.shape[1] % 2))
+    even_h = max(2, combined.shape[0] - (combined.shape[0] % 2))
+    if (even_w, even_h) != (combined.shape[1], combined.shape[0]):
+        combined = cv2.resize(combined, (even_w, even_h), interpolation=cv2.INTER_AREA)
+    return np.ascontiguousarray(combined, np.uint8)
 
 
 def run_policy_matrix(video: Path, out_root: Path, args) -> list[dict]:
@@ -412,6 +464,9 @@ def run_policy_matrix(video: Path, out_root: Path, args) -> list[dict]:
     base_record = {
         "preset": args.gallery_preset,
         "frames": emitted,
+        "source_fps": source_fps,
+        "sample_every": sample_every,
+        "preview_fps": output_fps,
         "mean_ms": float(np.mean(base_ms)) if base_ms else 0.0,
         "p50_ms": percentile(base_ms, 50),
         "p95_ms": percentile(base_ms, 95),
@@ -439,8 +494,7 @@ def run_preset_benchmarks(video: Path, root: Path, args) -> list[dict]:
         ]
         run(cmd)
         combined = outdir / safe_stem(video) / f"{safe_stem(video)}_benchmark_suite.json"
-        record = json.loads(combined.read_text(encoding="utf-8"))
-        records.append(record)
+        records.append(json.loads(combined.read_text(encoding="utf-8")))
     return records
 
 
@@ -459,16 +513,59 @@ def run_core_showcase(video: Path, root: Path, args) -> None:
     run(cmd)
 
 
+def write_csv(root: Path, report: dict) -> None:
+    path = root / "tile_policies.csv"
+    fields = [
+        "category", "name", "description", "target_tiles", "curve", "curve_strength",
+        "aggregation", "min_quality", "min_resolution_scale", "custom_degradation",
+        "custom_quality", "custom_resolution", "custom_qp", "planner_ms_mean",
+        "planner_ms_p95", "effective_pixel_fraction_mean", "mean_tile_quality",
+        "mean_tile_qp_delta", "mp4", "gif",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for item in report["tile_policies"]:
+            cfg = item["config"]
+            m = item["metrics"]
+            writer.writerow({
+                "category": item["category"],
+                "name": item["name"],
+                "description": item["description"],
+                "target_tiles": cfg["target_tiles"],
+                "curve": cfg["curve"],
+                "curve_strength": cfg["curve_strength"],
+                "aggregation": cfg["aggregation"],
+                "min_quality": cfg["min_quality"],
+                "min_resolution_scale": cfg["min_resolution_scale"],
+                "custom_degradation": cfg["custom_degradation"],
+                "custom_quality": cfg["custom_quality"],
+                "custom_resolution": cfg["custom_resolution"],
+                "custom_qp": cfg["custom_qp"],
+                "planner_ms_mean": m["planner_ms_mean"],
+                "planner_ms_p95": m["planner_ms_p95"],
+                "effective_pixel_fraction_mean": m["effective_pixel_fraction_mean"],
+                "mean_tile_quality": m["mean_tile_quality"],
+                "mean_tile_qp_delta": m["mean_tile_qp_delta"],
+                "mp4": item["artifacts"]["mp4"],
+                "gif": item["artifacts"]["gif"],
+            })
+
+
 def write_index(root: Path, video: Path, report: dict) -> None:
     lines = [
         f"# FoveaStream benchmark gallery — `{video.name}`",
         "",
-        "This directory was generated by `bench/benchmark_gallery.py`.",
+        "Generated by `bench/benchmark_gallery.py`.",
         "",
-        "## Source",
+        "## Reproducibility",
         "",
-        f"- SHA256: `{report['source']['sha256']}`",
-        f"- bytes: `{report['source']['bytes']}`",
+        f"- source SHA256: `{report['source']['sha256']}`",
+        f"- source bytes: `{report['source']['bytes']}`",
+        f"- source raster: `{report['source']['video']['width']}x{report['source']['video']['height']}`",
+        f"- source FPS: `{report['source']['video']['fps']}`",
+        f"- git commit: `{report['environment']['git_head']}`",
+        f"- FFmpeg: `{report['environment']['ffmpeg']}`",
         "",
         "## What to inspect",
         "",
@@ -481,6 +578,28 @@ def write_index(root: Path, video: Path, report: dict) -> None:
         "- `07_strength_sweep/` and `08_min_scale_sweep/` — added by `--matrix full`.",
         "- `09_user_policy/` — appears when user callback CLI options are supplied.",
         "",
+    ]
+
+    if report["preset_benchmarks"]:
+        lines += [
+            "## End-to-end preset summary",
+            "",
+            "| Preset | H.264 bytes saved | Context+ROI pixels saved | Codec processing | Transport p95 | Temporal ROI reuse |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+        for item in report["preset_benchmarks"]:
+            codec = item["codec"]
+            transport = item["transport"]
+            lines.append(
+                f"| {item['preset']} | {codec['h264_byte_saving_pct']:.2f}% | "
+                f"{codec['context_plus_roi_pixel_saving_pct']:.2f}% | "
+                f"{codec['processing_ms_per_frame']:.2f} ms | "
+                f"{transport['processing_ms']['p95']:.2f} ms | "
+                f"{100*transport['roi']['temporal_reuse_fraction']:.2f}% |"
+            )
+        lines.append("")
+
+    lines += [
         "## Logical tile policy matrix",
         "",
         "| Policy | Tiles | Curve | Aggregation | Effective pixels | Mean quality | Mean dQP | Planner p95 |",
@@ -495,15 +614,19 @@ def write_index(root: Path, video: Path, report: dict) -> None:
         )
     lines += [
         "",
-        "`effective pixels` is the logical multi-resolution estimate `sum(tile area * scale^2)`. It is not an encoded-byte measurement.",
-        "For each policy open `preview.mp4` or `preview.gif`: left is the actual reference tile-resolution degradation, right is the quality heat/grid.",
+        "`effective pixels` is the logical multi-resolution estimate `sum(tile area * scale^2)`. It is not encoded bytes.",
+        "For each tile policy open `preview.mp4` or `preview.gif`: left is the actual reference resolution degradation; right is the quality heat/grid.",
+        "",
+        "Machine-readable forms: `report.json` and `tile_policies.csv`.",
         "",
     ]
     (root / "INDEX.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Run all major FoveaStream modes/settings on one video and build a visual benchmark gallery.")
+    p = argparse.ArgumentParser(
+        description="Run all major FoveaStream modes/settings on one video and build a visual benchmark gallery."
+    )
     p.add_argument("video", type=Path)
     p.add_argument("--outdir", type=Path, default=Path("output/gallery"))
     p.add_argument("--matrix", choices=("standard", "full"), default="standard",
@@ -511,12 +634,15 @@ def main() -> None:
     p.add_argument("--gallery-preset", choices=("balanced", "aggressive", "extreme"), default="aggressive")
     p.add_argument("--gallery-fps", type=float, default=8.0)
     p.add_argument("--gallery-seconds", type=float, default=6.0)
-    p.add_argument("--gallery-width", type=int, default=1280, help="max width of two-panel tile policy previews")
+    p.add_argument("--gallery-width", type=int, default=1280,
+                   help="max width of two-panel tile policy previews")
     p.add_argument("--gif-width", type=int, default=720)
     p.add_argument("--showcase-size", type=int, default=720)
     p.add_argument("--no-gif", action="store_true")
     p.add_argument("--skip-preset-benchmarks", action="store_true")
     p.add_argument("--skip-showcase", action="store_true")
+    p.add_argument("--clean", action="store_true",
+                   help="remove this video's existing gallery folder before running")
     p.add_argument("--process-fps", type=float, default=30.0)
     p.add_argument("--preview-fps", type=float, default=12.0)
     p.add_argument("--crf", type=int, default=23)
@@ -532,15 +658,25 @@ def main() -> None:
     p.add_argument("--user-min-scale", type=float, default=0.125)
     args = p.parse_args()
 
+    if args.custom_degradation and args.custom_quality:
+        p.error("--custom-degradation and --custom-quality are mutually exclusive")
+    if args.gallery_fps <= 0 or args.gallery_seconds <= 0:
+        p.error("--gallery-fps and --gallery-seconds must be > 0")
+    if args.gallery_width < 2 or args.gif_width < 2 or args.showcase_size < 2:
+        p.error("gallery/showcase dimensions must be >= 2")
+
     video = args.video.resolve()
     if not video.exists():
         p.error(f"video not found: {video}")
-    ffmpeg_path()  # fail before doing expensive work
+    ffmpeg = ffmpeg_path()  # fail before doing expensive work
 
     root = args.outdir / safe_stem(video)
+    if args.clean and root.exists():
+        shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
     print(f"\nFoveaStream gallery output: {root}\n")
 
+    source_video = probe_video(video)
     preset_reports = run_preset_benchmarks(video, root, args)
     run_core_showcase(video, root, args)
     tile_reports = run_policy_matrix(video, root, args)
@@ -552,23 +688,28 @@ def main() -> None:
             "name": video.name,
             "sha256": sha256(video),
             "bytes": video.stat().st_size,
+            "video": source_video,
         },
         "environment": {
+            "git_head": git_head(),
             "python": sys.version,
             "platform": platform.platform(),
             "opencv": cv2.__version__,
             "numpy": np.__version__,
+            "ffmpeg": ffmpeg_version(ffmpeg),
         },
         "matrix": args.matrix,
         "preset_benchmarks": preset_reports,
         "tile_policies": tile_reports,
     }
     (root / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_csv(root, report)
     write_index(root, video, report)
 
     print("\n=== Gallery complete ===")
     print(f"index:  {root / 'INDEX.md'}")
     print(f"report: {root / 'report.json'}")
+    print(f"csv:    {root / 'tile_policies.csv'}")
     print(f"open:   {root}")
 
 
