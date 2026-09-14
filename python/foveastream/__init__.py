@@ -128,3 +128,18 @@ from .streaming import (
     roi_iou,
     run_stream,
 )
+
+# Drop-in frame middleware. This sits one level above StreamRuntime and lets existing camera or
+# callback pipelines insert FoveaStream without adopting a provider-specific transport API.
+from .middleware import (
+    CallbackFrameSink,
+    FramePacket,
+    FrameSink,
+    FrameTransform,
+    FoveaStreamTransform,
+    InlinePipeline,
+    OptimizedFrame,
+    PipelineStats,
+    RealtimeBridge,
+    transform_source,
+)
