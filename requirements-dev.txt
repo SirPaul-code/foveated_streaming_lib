@@ -1,0 +1,2 @@
+# Development/test environment. Canonical extras stay in pyproject.toml.
+-e .[dev]
