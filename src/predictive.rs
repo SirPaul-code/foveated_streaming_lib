@@ -166,7 +166,6 @@ impl PredictiveAttentionFilter {
             self.state.center.y + ky * ey,
         ).clamped();
 
-        // Alpha-beta style velocity correction coupled to the covariance update.
         let beta = 0.22 * m.confidence.clamp(0.0, 1.0);
         self.state.velocity = Point2::new(
             self.state.velocity.x + beta * ex / dt,
@@ -216,7 +215,6 @@ impl PredictiveAttentionFilter {
         let (sy, cy) = yaw.sin_cos();
         let (sp, cp) = pitch.sin_cos();
 
-        // Inverse camera rotation maps a world-fixed ray into the new camera frame.
         let x1 = cy * x - sy * z;
         let z1 = sy * x + cy * z;
         x = x1;
@@ -249,12 +247,16 @@ impl PredictiveAttentionFilter {
         let s = self.future_state(horizon_s);
         let half_w = 0.5 * base_width * s.log_scale.exp() + sigma.max(0.0) * s.var_x.sqrt();
         let half_h = 0.5 * base_height * s.log_scale.exp() + sigma.max(0.0) * s.var_y.sqrt();
+        let x0 = (s.center.x - half_w).clamp(0.0, 1.0);
+        let y0 = (s.center.y - half_h).clamp(0.0, 1.0);
+        let x1 = (s.center.x + half_w).clamp(x0, 1.0);
+        let y1 = (s.center.y + half_h).clamp(y0, 1.0);
         RoiRect {
-            x: (s.center.x - half_w).clamp(0.0, 1.0),
-            y: (s.center.y - half_h).clamp(0.0, 1.0),
-            w: (2.0 * half_w).clamp(0.0, 1.0),
-            h: (2.0 * half_h).clamp(0.0, 1.0),
-            weight: s.confidence.max(0.05),
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+            confidence: s.confidence.max(0.05),
         }
     }
 
