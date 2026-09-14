@@ -2,7 +2,7 @@
 """Benchmark the full adaptive relevance transport stack on real video.
 
 This complements the codec benchmark. It measures preprocessing latency, temporal ROI reuse,
-layered pixel load, atlas load, background delta activity and encoder-hint statistics.
+layered pixel load, atlas load, background delta activity, encoder hints and logical tile planning.
 """
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ from foveastream import (
     AdaptiveTransportConfig,
     AdaptiveTransportRuntime,
     LatencyBudget,
+    TilePlanner,
+    TilePlannerConfig,
 )
 
 
@@ -63,6 +65,16 @@ def benchmark(path: Path, args) -> dict:
         ),
         budget=budget,
     ))
+    tile_planner = None
+    if args.tiles > 0:
+        tile_planner = TilePlanner(TilePlannerConfig(
+            target_tiles=args.tiles,
+            curve=args.tile_curve,
+            curve_strength=args.tile_strength,
+            aggregation=args.tile_aggregation,
+            min_quality=args.tile_min_quality,
+            min_resolution_scale=args.tile_min_scale,
+        ))
 
     times = []
     roi_counts = []
@@ -74,6 +86,9 @@ def benchmark(path: Path, args) -> dict:
     qp_mins = []
     qp_maxs = []
     strengths = []
+    tile_pixel_fractions = []
+    tile_mean_quality = []
+    tile_mean_qp = []
     processed = 0
     decoded_index = 0
 
@@ -89,6 +104,9 @@ def benchmark(path: Path, args) -> dict:
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             t0 = time.perf_counter()
             out = runtime.process(rgb, timestamp_s)
+            tile_plan = None
+            if tile_planner is not None and out.process_result.quality_map is not None:
+                tile_plan = tile_planner.plan(out.process_result.quality_map)
             times.append((time.perf_counter() - t0) * 1000.0)
             roi_counts.append(len(out.process_result.rois))
             changed_counts.append(len(out.layered.changed_rois))
@@ -103,6 +121,10 @@ def benchmark(path: Path, args) -> dict:
             qp_maxs.append(float(qp.max()) if qp.size else 0.0)
             if out.controller_state is not None:
                 strengths.append(out.controller_state.strength)
+            if tile_plan is not None:
+                tile_pixel_fractions.append(tile_plan.effective_pixel_fraction)
+                tile_mean_quality.append(tile_plan.mean_quality)
+                tile_mean_qp.append(tile_plan.mean_qp_delta)
             processed += 1
             decoded_index += 1
     finally:
@@ -143,6 +165,17 @@ def benchmark(path: Path, args) -> dict:
             'mean_pixels_saved_percent': 100.0 * (1.0 - float(np.mean(pixel_fractions))) if pixel_fractions else 0.0,
             'mean_atlas_pixel_fraction': float(np.mean(atlas_fractions)) if atlas_fractions else 0.0,
         },
+        'logical_tiles': {
+            'enabled': tile_planner is not None,
+            'target_tiles': args.tiles if tile_planner is not None else 0,
+            'curve': args.tile_curve if tile_planner is not None else None,
+            'curve_strength': args.tile_strength if tile_planner is not None else None,
+            'aggregation': args.tile_aggregation if tile_planner is not None else None,
+            'mean_effective_pixel_fraction': float(np.mean(tile_pixel_fractions)) if tile_pixel_fractions else None,
+            'mean_pixels_saved_percent': 100.0 * (1.0 - float(np.mean(tile_pixel_fractions))) if tile_pixel_fractions else None,
+            'mean_quality': float(np.mean(tile_mean_quality)) if tile_mean_quality else None,
+            'mean_delta_qp': float(np.mean(tile_mean_qp)) if tile_mean_qp else None,
+        },
         'background_cache': {
             'enabled': bool(args.background_cache),
             'mean_changed_tiles': float(np.mean(bg_counts)) if bg_counts else 0.0,
@@ -175,11 +208,17 @@ def main() -> None:
     p.add_argument('--network-ms', type=float, default=40.0)
     p.add_argument('--consumer-ms', type=float, default=20.0)
     p.add_argument('--safety-ms', type=float, default=15.0)
+    p.add_argument('--tiles', type=int, default=100, help='exact logical tile count; 0 disables')
+    p.add_argument('--tile-curve', choices=('linear', 'smoothstep', 'gaussian', 'exponential', 'power'), default='gaussian')
+    p.add_argument('--tile-strength', type=float, default=3.0)
+    p.add_argument('--tile-aggregation', choices=('mean', 'max', 'p90'), default='max')
+    p.add_argument('--tile-min-quality', type=float, default=0.04)
+    p.add_argument('--tile-min-scale', type=float, default=0.125)
     args = p.parse_args()
 
     results = [benchmark(path, args) for path in args.videos]
     report = {
-        'schema': 'foveastream.transport-benchmark.v1',
+        'schema': 'foveastream.transport-benchmark.v2',
         'environment': {
             'python': sys.version,
             'platform': platform.platform(),
