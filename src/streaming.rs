@@ -3,7 +3,7 @@ use crate::{
     AdaptiveScheduler, ImageView, InnovationSignals, MultiRoiTracker, Point2,
     RoiProposal, RoiRect, RoiTrackerConfig, SchedulerConfig, SendDecision,
 };
-use crate::types::FoveationConfig;
+use crate::types::{Falloff, FoveationConfig};
 
 #[derive(Clone, Copy, Debug)]
 pub struct StreamRuntimeConfig {
@@ -11,6 +11,8 @@ pub struct StreamRuntimeConfig {
     pub tracker: RoiTrackerConfig,
     pub scheduler: SchedulerConfig,
     pub context_scale: f32,
+    pub quality_floor: f32,
+    pub uncertainty_floor: f32,
     pub roi_max_side: usize,
     pub qp_block: usize,
     pub fovea_qp_delta: i8,
@@ -20,13 +22,15 @@ pub struct StreamRuntimeConfig {
     pub produce_qp_map: bool,
 }
 
-impl Default for StreamRuntimeConfig {
-    fn default() -> Self {
+impl StreamRuntimeConfig {
+    pub fn balanced() -> Self {
         Self {
-            foveation: FoveationConfig::default(),
-            tracker: RoiTrackerConfig::default(),
+            foveation: FoveationConfig { peripheral_scale: 1.0 / 8.0, ..FoveationConfig::default() },
+            tracker: RoiTrackerConfig { max_tracks: 8, pixel_budget_fraction: 0.30, ..RoiTrackerConfig::default() },
             scheduler: SchedulerConfig::default(),
             context_scale: 0.25,
+            quality_floor: 0.04,
+            uncertainty_floor: 0.08,
             roi_max_side: 512,
             qp_block: 16,
             fovea_qp_delta: -4,
@@ -36,6 +40,46 @@ impl Default for StreamRuntimeConfig {
             produce_qp_map: true,
         }
     }
+
+    pub fn aggressive() -> Self {
+        let mut cfg = Self::balanced();
+        cfg.foveation.peripheral_scale = 1.0 / 16.0;
+        cfg.foveation.falloff_x = 0.18;
+        cfg.foveation.falloff_y = 0.18;
+        cfg.foveation.falloff = Falloff::Gaussian;
+        cfg.tracker.max_tracks = 6;
+        cfg.tracker.pixel_budget_fraction = 0.22;
+        cfg.context_scale = 0.15;
+        cfg.quality_floor = 0.01;
+        cfg.uncertainty_floor = 0.02;
+        cfg
+    }
+
+    pub fn extreme() -> Self {
+        let mut cfg = Self::aggressive();
+        cfg.foveation.peripheral_scale = 1.0 / 24.0;
+        cfg.foveation.falloff_x = 0.12;
+        cfg.foveation.falloff_y = 0.12;
+        cfg.tracker.max_tracks = 4;
+        cfg.tracker.pixel_budget_fraction = 0.15;
+        cfg.context_scale = 0.10;
+        cfg.quality_floor = 0.0;
+        cfg.uncertainty_floor = 0.01;
+        cfg
+    }
+
+    pub fn preset(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "balanced" => Some(Self::balanced()),
+            "aggressive" => Some(Self::aggressive()),
+            "extreme" => Some(Self::extreme()),
+            _ => None,
+        }
+    }
+}
+
+impl Default for StreamRuntimeConfig {
+    fn default() -> Self { Self::balanced() }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -126,7 +170,12 @@ impl StreamRuntime {
         self.last_timestamp_s = Some(frame.timestamp_s);
 
         let rois = self.tracker.update(dt, proposals);
-        let quality = quality_map(frame.width, frame.height, points, &rois, &self.cfg.foveation);
+        let mean_conf = if !self.tracker.tracks().is_empty() {
+            self.tracker.tracks().iter().map(|t| t.confidence).sum::<f32>() / self.tracker.tracks().len() as f32
+        } else if !points.is_empty() { 1.0 } else { 0.0 };
+        let mut quality = quality_map(frame.width, frame.height, points, &rois, &self.cfg.foveation);
+        let floor = (self.cfg.quality_floor + self.cfg.uncertainty_floor * (1.0 - mean_conf)).clamp(0.0, 1.0);
+        for q in &mut quality { *q = q.max(floor).min(1.0); }
 
         if signals.uncertainty_radius <= 0.0 {
             signals.uncertainty_radius = self.tracker.tracks().iter()
@@ -134,7 +183,6 @@ impl StreamRuntime {
                 .fold(0.0f32, f32::max);
         }
         if signals.semantic_uncertainty <= 0.0 && !self.tracker.tracks().is_empty() {
-            let mean_conf = self.tracker.tracks().iter().map(|t| t.confidence).sum::<f32>() / self.tracker.tracks().len() as f32;
             signals.semantic_uncertainty = (1.0 - mean_conf).clamp(0.0, 1.0);
         }
         let decision = self.scheduler.step(dt, signals);
@@ -197,7 +245,7 @@ mod tests {
 
     #[test]
     fn runtime_returns_multiple_roi_views() {
-        let mut rt = StreamRuntime::new(StreamRuntimeConfig::default());
+        let mut rt = StreamRuntime::new(StreamRuntimeConfig::aggressive());
         let frame = vec![127u8; 64 * 48 * 3];
         let proposals = [
             RoiProposal::new(RoiRect { x: .1, y: .1, w: .15, h: .2, confidence: 1.0 }, 1.0),
@@ -210,6 +258,7 @@ mod tests {
         assert_eq!(out.rois.len(), 2);
         assert_eq!(out.roi_views().len(), 2);
         assert_eq!(out.quality_map.len(), 64 * 48);
+        assert!((rt.config().context_scale - 0.15).abs() < 1.0e-6);
     }
 
     #[test]
