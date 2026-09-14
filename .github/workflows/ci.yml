@@ -38,6 +38,11 @@ jobs:
           python examples/generate_showcase.py --help
           python bench/benchmark_suite.py --help
           python bench/benchmark_gallery.py --help
+      - name: install ffmpeg for runtime benchmark smoke
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -hide_banner -encoders | grep -q libx264
       - name: benchmark gallery runtime smoke
         run: |
           python - <<'PY'
