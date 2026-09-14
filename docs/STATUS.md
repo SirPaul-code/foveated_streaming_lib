@@ -17,13 +17,13 @@ arbitrary timestamped frame source + arbitrary relevance evidence
 
 The project must not become a Gemini/OpenAI/WebRTC-specific client or a one-off blur filter.
 
-## Current branch / PR at this checkpoint
+## Current checkpoint
 
-Feature branch: `feat/universal-streaming-multiroi`
+Branch: `main`
 
-PR: `#2 Add universal streaming runtime and multi-ROI tracking`
+Merged PR: `#2 Add universal streaming runtime and multi-ROI tracking`
 
-After merge, use `main` and check `git log -1 --oneline` for the exact final merge SHA.
+Merge/squash commit: `b27737440976dee8f07010ad01a962c09fddceb3`
 
 ## Implemented native Rust core
 
@@ -42,7 +42,7 @@ After merge, use `main` and check `git log -1 --oneline` for the exact final mer
 - adaptive send/skip scheduler;
 - C ABI for existing low-level foveation/QP primitives.
 
-### New multi-ROI runtime
+### Multi-ROI runtime
 
 `src/roi.rs`:
 
@@ -105,7 +105,7 @@ This avoids the failure mode where one "best" ROI destroys a second simultaneous
 
 ## Real-video benchmark / demo
 
-`bench/real_video_visualization.py` now supports multiple simultaneous automatic ROIs.
+`bench/real_video_visualization.py` supports multiple simultaneous automatic ROIs.
 
 Reference command:
 
@@ -199,12 +199,14 @@ These are edge adapters/performance work, not reasons to couple the core to a pr
 
 ## CI / verification
 
-CI is configured to run:
+PR #2 passed the configured CI matrix before merge:
 
-- Rust tests/build on Ubuntu, Windows and macOS;
-- Python tests on Ubuntu.
+- Python install/tests: Ubuntu — **PASS**;
+- Rust `cargo test --all-targets` + `cargo build --release`: Ubuntu — **PASS**;
+- Rust `cargo test --all-targets` + `cargo build --release`: macOS — **PASS**;
+- Rust `cargo test --all-targets` + `cargo build --release`: Windows — **PASS**.
 
-At the time this handoff text was written, PR #2 was still open and its latest CI result had not yet been recorded here. Before declaring this checkpoint final, inspect PR #2 workflow results and fix failures. Update this section after merge.
+The first CI attempt exposed invalid shorthand float literals in a Rust test; those were corrected before merge. The final PR head `d0b3ff983bbbb22f993ed0ba6b5f822d106cacd9` passed all four jobs.
 
 ## External prior-art sanity
 
@@ -212,12 +214,12 @@ Do not claim multi-ROI or ROI-QP encoding as novel by itself. Existing encoders 
 
 ## Next engineering priorities
 
-### P0 — verification / API stability
+### P0 — API stability / regression coverage
 
-1. Get PR #2 green on Rust Linux/Windows/macOS and Python CI.
-2. Add semantic-versioned API tests for `RoiProposal`, `ProcessResult` and presets.
-3. Add benchmark regression fixtures for zero, one and multiple ROIs.
-4. Add malformed timestamp/frame tests to native and Python layers.
+1. Add semantic-versioned API tests for `RoiProposal`, `ProcessResult` and presets.
+2. Add benchmark regression fixtures for zero, one and multiple ROIs.
+3. Add more malformed timestamp/frame tests to native and Python layers.
+4. Add a C ABI for the new streaming runtime if direct Swift/Kotlin/C/C++ consumption is required without a Rust wrapper.
 
 ### P1 — timestamp/evidence bus
 
