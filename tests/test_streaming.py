@@ -44,6 +44,20 @@ def test_overlapping_proposals_are_deduplicated():
     assert len(result.rois) == 1
 
 
+def test_pixel_budget_is_hard_cap_even_for_first_oversized_roi():
+    budget = .10
+    runtime = FoveaStreamRuntime(StreamRuntimeConfig(tracker=RoiTrackerConfig(pixel_budget_fraction=budget)))
+    frame = np.zeros((80, 120, 3), np.uint8)
+    result = runtime.process(
+        frame, 0.0,
+        proposals=[RoiProposal(Roi(.05, .05, .90, .90), 1.0, source='oversized')],
+    )
+    assert len(result.rois) == 1
+    area = sum(r.w * r.h for r in result.rois)
+    assert area <= budget + 1e-6
+    assert area > .09
+
+
 def test_callback_sink_can_filter_on_send_decision():
     calls = []
     sink = CallbackSink(lambda result: calls.append(result.timestamp_s), only_when_send=True)

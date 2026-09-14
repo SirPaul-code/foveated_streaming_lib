@@ -73,6 +73,18 @@ def _center_distance(a: Roi, b: Roi) -> float:
     return math.hypot((a.x + a.w / 2) - (b.x + b.w / 2), (a.y + a.h / 2) - (b.y + b.h / 2))
 
 
+def _fit_roi_to_area(roi: Roi, max_area: float) -> Roi:
+    """Shrink an ROI about its center so its normalized area cannot exceed max_area."""
+    r = roi.clipped()
+    area = r.w * r.h
+    if max_area <= 0 or area <= max_area:
+        return r
+    scale = math.sqrt(max_area / max(area, 1e-12))
+    nw, nh = r.w * scale, r.h * scale
+    cx, cy = r.x + r.w * .5, r.y + r.h * .5
+    return Roi(cx - nw * .5, cy - nh * .5, nw, nh, r.confidence).clipped()
+
+
 class MultiRoiTracker:
     """Maintains multiple independent ROI tracks without assuming semantic classes."""
 
@@ -150,6 +162,7 @@ class MultiRoiTracker:
 
     def active_rois(self) -> list[Roi]:
         cfg = self.config; area = 0.0; out: list[Roi] = []
+        budget = float(np.clip(cfg.pixel_budget_fraction, 0, 1))
         for t in sorted(self.tracks, key=lambda x: x.score, reverse=True)[:max(1, cfg.max_tracks)]:
             r = t.roi.clipped(); h = max(0.0, cfg.prediction_horizon_s); speed = math.hypot(float(t.velocity[0]), float(t.velocity[1]))
             margin = max(0.0, cfg.uncertainty_growth_per_s) * t.stale_s + speed * h * .35
@@ -157,9 +170,18 @@ class MultiRoiTracker:
                 r.x + float(t.velocity[0])*h - margin, r.y + float(t.velocity[1])*h - margin,
                 max(.005, r.w + float(t.velocity[2])*h) + 2*margin, max(.005, r.h + float(t.velocity[3])*h) + 2*margin,
                 t.confidence,
-            ).clipped(); a = pred.w * pred.h
-            if out and cfg.pixel_budget_fraction > 0 and area + a > cfg.pixel_budget_fraction: continue
+            ).clipped()
+            if budget > 0:
+                remaining = max(0.0, budget - area)
+                if remaining <= 1e-9:
+                    break
+                pred = _fit_roi_to_area(pred, remaining)
+            a = pred.w * pred.h
+            if a <= 0:
+                continue
             out.append(pred); area += a
+            if budget > 0 and area >= budget - 1e-6:
+                break
         return out
 
 
