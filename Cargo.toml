@@ -1,8 +1,8 @@
 [package]
 name = "foveastream-core"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Provider-agnostic predictive foveation middleware for camera, video and vision pipelines"
+description = "Provider-agnostic adaptive relevance transport for camera, video and vision pipelines"
 license = "LicenseRef-Proprietary"
 repository = "https://github.com/SirPaul-code/foveated_streaming_lib"
 
