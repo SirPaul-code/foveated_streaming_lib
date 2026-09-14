@@ -4,239 +4,326 @@ Last updated: 2026-09-14
 
 ## Goal
 
-Build a provider-agnostic frame optimization/relevance SDK that can be inserted between an existing camera/frame source and an existing encoder, transport, model or callback without making either side depend on FoveaStream internals.
+Build a provider-agnostic adaptive relevance transport SDK that can be inserted between an existing camera/frame source and an existing encoder, transport, model or callback without forcing either side to adopt FoveaStream internals.
 
-Preferred product boundary:
+Stable product boundary:
 
 ```text
 existing source
     -> timestamped frame + optional relevance evidence
-    -> FoveaStream middleware
-    -> optimized same-size frame + optional advanced outputs
+    -> persistent relevance / multi-ROI state
+    -> one or more transport actuators
     -> existing consumer
 ```
 
-Do not turn the core into a Gemini/OpenAI/WebRTC/CameraX-specific client.
+Do not turn core into a Gemini/OpenAI/WebRTC/CameraX-specific client.
 
 ## Current checkpoint
 
-Branch: `main`
+Feature branch: `feat/relevance-transport-stack`
 
-Merged PR: `#4 Add drop-in frame middleware for camera pipelines`
+PR: `#5 Add adaptive relevance transport stack`
 
-Merge commit: `77324c90f10a51ec39bb05ca8bb4b996b6516ae2`
+Base `main` before this work: `3828a26cf2db42989866f54201cddca0aeed766e`
 
-Package version: `0.2.0` in Python and Rust manifests.
+Package version on this branch: `0.3.0` in Python and Rust manifests.
 
-## Implemented native Rust core
+At the time this handoff was written PR #5 was open and awaiting CI. Check the PR before claiming these features are on `main`.
 
-Existing native capabilities:
+## Existing merged middleware checkpoint
 
-- normalized point/ROI relevance;
+PR #4 / merge commit `77324c90f10a51ec39bb05ca8bb4b996b6516ae2` already provides:
+
+- causal frame-by-frame processing;
+- `FoveaStreamTransform` drop-in same-size frame transform;
+- `FramePacket` / `OptimizedFrame`;
+- bounded `RealtimeBridge` with `latest` drop policy;
+- continuous-video `every_frame` semantics;
+- opt-in scheduler-driven `when_send` semantics;
 - persistent multi-ROI tracking;
-- hard total ROI-area budgeting;
-- quality-field generation;
-- same-size foveated RGB generation;
-- context + multiple high-resolution ROI views;
-- QP-delta map generation;
-- predictive attention primitives;
-- adaptive SEND/SKIP scheduler;
-- synchronous `StreamRuntime`.
+- same-size foveated RGB;
+- context + ROI views;
+- block delta-QP maps;
+- native Rust middleware API.
 
-`src/middleware.rs` adds:
+## New adaptive transport stack in PR #5
 
-- `EmitPolicy::EveryFrame`;
-- `EmitPolicy::WhenSend`;
-- `StreamMiddleware`;
-- `StreamMiddleware::aggressive()`;
-- middleware processing that returns `Option<ProcessResult>`;
-- sink integration that only invokes a sink for emitted outputs.
+### Python: `python/foveastream/optimization.py`
 
-`EveryFrame` is the safe/default semantic for continuous camera/video paths. `WhenSend` is explicit opt-in for model/request/event pipelines.
+#### `EvidenceBus`
 
-The native middleware remains synchronous and does not own camera threads, queues, encoders or sockets.
+Timestamped, TTL-bound relevance fusion from arbitrary independent sources.
 
-## Implemented Python middleware
+A source may publish:
 
-`python/foveastream/middleware.py` provides:
+- ROI proposals;
+- points;
+- dense quality/relevance maps;
+- per-source weight.
 
-- `FramePacket` — RGB frame + monotonic timestamp + opaque metadata + optional relevance evidence;
-- `OptimizedFrame` — same-size optimized frame + preserved timestamp/metadata + full `ProcessResult`;
-- `FoveaStreamTransform` — persistent drop-in transform;
-- `FrameTransform` / `FrameSink` protocols;
-- `CallbackFrameSink`;
-- `transform_source(...)` pull adapter;
-- `InlinePipeline`;
-- `RealtimeBridge`;
-- `PipelineStats`.
+Dense maps support `max`, `noisy_or`, and clipped additive fusion. Dense fused maps are converted into class-agnostic ROI proposals before entering the existing tracker.
 
-Primary inline usage:
+Do not hardcode semantic classes such as person/car/face into this layer.
 
-```python
-optimizer = FoveaStreamTransform(preset="aggressive")
-optimized = optimizer.transform(frame_rgb, timestamp_s)
-downstream.send(optimized.frame_rgb)
-```
+#### `LowResProposalAdapter`
 
-Callback-driven camera usage:
+Runs arbitrary proposal logic on a downscaled analysis frame while preserving the original full-resolution frame for encoding/output. Coordinates remain normalized.
 
-```python
-bridge = RealtimeBridge(
-    optimizer,
-    sink,
-    queue_size=1,
-    drop_policy="latest",
-)
-camera.on_frame(lambda frame, ts: bridge.submit(frame, ts))
-```
+This formalizes the pattern already used by the cheap residual-motion proposal source.
 
-## Realtime queue rule
+#### `LatencyBudget`
 
-`RealtimeBridge(drop_policy="latest")` keeps a bounded pending queue and discards stale queued frames when capture outruns processing. The frame currently being processed is never interrupted.
+Maps expected capture/analysis/encode/network/decode/consumer delay to the ROI tracker's prediction horizon.
 
-This avoids:
+The tracker therefore protects where relevance is expected to matter after downstream delay rather than only where the region was at capture time.
 
-```text
-60 FPS camera -> 30 FPS processing -> unbounded queue -> increasing latency
-```
+The horizon is clamped by `max_horizon_s`.
 
-Recommended latency-sensitive behavior:
+#### `TemporalRoiCache`
+
+High-resolution ROI cache keyed by persistent tracks/ROI association.
+
+Important behavior:
+
+- first ROI is emitted;
+- unchanged ROI reuses the last emitted high-res copy;
+- material change emits a new ROI;
+- max-refresh timeout forces refresh;
+- change is compared against the **last emitted state**, not merely the previous frame, so slow drift eventually accumulates enough difference to refresh.
+
+This reduces repeated high-resolution ROI payloads in VLM/layered transports.
+
+#### `BackgroundTileCache`
+
+Opt-in tile delta cache for mostly static cameras/backgrounds.
+
+It emits only changed tiles or forced refreshes. It is deliberately **not enabled by default** because a moving camera naturally invalidates most tiles unless the host first performs camera/world-motion compensation.
+
+#### `LayeredPayload`
+
+Represents:
 
 ```text
-60 FPS camera -> queue depth 1/latest -> process freshest available state -> bounded latency
+low-res whole-scene context
++
+changed high-res ROI enhancements
++
+optional changed background tiles
 ```
 
-Use `drop_policy="block"` only when every frame must be processed and backpressure into the producer is acceptable.
+This supports a base + enhancement transport where global scene context remains available even if enhancement packets are delayed/dropped.
 
-## Metadata preservation
+#### Packed ROI atlas
 
-`FramePacket.metadata` is intentionally opaque and is copied to `OptimizedFrame.metadata` unchanged.
+`pack_roi_atlas(...)` packs:
 
-Platform adapters may store camera ID, frame sequence, RTP timestamp, tracing IDs or other application metadata without adding provider knowledge to core.
+- global context;
+- only changed ROI enhancements;
 
-## ROI design
+into one ordinary RGB image plus placement metadata.
 
-Do not hardcode faces/cars/people as the meaning of ROI.
+Use this for consumers that accept one image but cannot accept a list of context/ROI images.
 
-An ROI means only:
+#### `EncoderSpatialHints`
 
-> spatial support whose loss of detail would disproportionately harm the current downstream task.
+Portable encoder control-plane contract:
 
-Automatic residual-motion proposals are a fallback source. External task detectors, gaze, user input, AR anchors, OCR regions, depth, model feedback and other signals can inject `RoiProposal` values.
+- block size;
+- signed `int8` delta-QP map;
+- active ROIs;
+- fovea/periphery reference QP deltas.
 
-## Benchmark state
+`to_bytes()` exposes a row-major signed int8 map for native adapters.
 
-Checked-in real-video benchmark data:
+**Do not claim this is already a direct NVENC/MediaCodec/VideoToolbox integration.** Those platform adapters must translate this portable contract to their concrete encoder APIs.
 
-`docs/assets/real_demo/benchmark_presets_2026-09-14.json`
+#### `AdaptiveBudgetController`
 
-Aggressive reference results:
+Closed-loop spatial budget controller driven by actual encoder bitrate and/or layered pixel fraction.
 
-- example1: 71.30% same-encoder H.264 saving; 96.26% context+ROI pixel saving;
-- example2: 31.34% same-encoder H.264 saving; 84.08% context+ROI pixel saving.
+It continuously interpolates between balanced-like and extreme-like policies by adjusting:
 
-Those Python/OpenCV timings are reference-host measurements, not universal device latency claims.
+- peripheral scale;
+- falloff width;
+- total ROI budget;
+- max active ROI count;
+- context scale;
+- quality floor;
+- uncertainty floor;
+- periphery delta-QP.
 
-## Docs / examples
+A fixed preset is therefore only an initial condition, not a permanent bitrate policy.
 
-Primary integration documentation:
+#### `AdaptiveTransportRuntime`
+
+Canonical high-level orchestrator combining:
+
+```text
+EvidenceBus
+-> low-cost relevance proposals
+-> predictive multi-ROI runtime
+-> temporal cache
+-> optional background cache
+-> layered payload
+-> optional packed atlas
+-> encoder spatial hints
+-> optional adaptive budget controller
+```
+
+It remains provider/transport agnostic.
+
+Drop-in output is still available as:
+
+```python
+out = optimizer.process(frame_rgb, timestamp_s)
+downstream.send(out.frame_rgb)
+```
+
+Advanced consumers can instead use:
+
+```python
+out.layered.context
+out.layered.changed_rois
+out.layered.atlas
+out.encoder_hints.qp_delta_map
+```
+
+### Native Rust: `src/transport.rs`
+
+Native control-plane primitives now mirror the pieces that do not require Python/OpenCV image plumbing:
+
+- `LatencyBudget`;
+- `AdaptiveBudgetConfig`;
+- `AdaptiveBudgetController`;
+- `AdaptiveBudgetState`;
+- `EvidenceBus` / `EvidenceRecord`;
+- `RegionSignature` / `signature_rgb8`;
+- `TemporalRegionCache`;
+- `EncoderSpatialHints`;
+- `analysis_dimensions`.
+
+The Rust layer intentionally does not fake a platform hardware-encoder API.
+
+## Examples / docs
+
+New:
+
+- `docs/ADAPTIVE_TRANSPORT.md` — complete architecture and integration guide;
+- `examples/adaptive_transport.py` — live camera -> adaptive transport -> ordinary preview, with examples for layered/VLM/QP paths;
+- `bench/benchmark_transport_stack.py` — preprocessing/cache/layered/QP benchmark runner.
+
+Existing integration docs remain relevant:
 
 - `AGENTS.md`;
 - `docs/FRAME_MIDDLEWARE.md`;
 - `docs/AGENT_INTEGRATION.md`;
 - `docs/REALTIME_STREAMING_STATUS.md`.
 
-Examples:
+A new agent should read `docs/ADAPTIVE_TRANSPORT.md` immediately after `AGENTS.md`.
 
-- `examples/live_webcam.py` — inline camera -> `FoveaStreamTransform` -> preview;
-- `examples/custom_sink_adapter.py` — callback camera -> bounded `RealtimeBridge` -> arbitrary sink.
+## Benchmarking
 
-## Verification
+Existing checked-in codec benchmark remains authoritative for current same-encoder H.264 byte results:
 
-PR #4 passed the complete configured CI matrix before merge:
+- example1 aggressive: 71.30% H.264 saving; 96.26% context+ROI pixel saving;
+- example2 aggressive: 31.34% H.264 saving; 84.08% context+ROI pixel saving.
 
-- Python install/tests on Ubuntu — **PASS**;
-- Rust `cargo test --all-targets` + `cargo build --release` on Ubuntu — **PASS**;
-- Rust `cargo test --all-targets` + `cargo build --release` on macOS — **PASS**;
-- Rust `cargo test --all-targets` + `cargo build --release` on Windows — **PASS**.
+New transport-stack benchmark records:
 
-Python middleware regression coverage includes:
+- mean / p50 / p95 / p99 preprocessing latency;
+- effective throughput;
+- active ROI count;
+- changed ROI count;
+- temporal reuse fraction;
+- layered payload pixel fraction;
+- atlas pixel fraction;
+- background changed-tile rate;
+- delta-QP map statistics;
+- adaptive controller state.
 
-- same-size output shape;
-- timestamp preservation;
-- metadata preservation;
-- `EveryFrame` behavior;
-- `WhenSend` suppression;
-- synchronous source -> transform -> sink wiring;
-- deterministic latest-frame queue dropping;
-- worker error propagation.
+Command:
 
-Rust middleware tests cover:
+```bash
+python bench/benchmark_transport_stack.py example1.mp4 example2.mp4 \
+  --preset aggressive \
+  --out output/transport_benchmark.json
+```
 
-- every-frame semantics;
-- scheduler-based suppression;
-- sink invocation only for emitted results.
+The transport-stack benchmark does not pretend that a delta-QP map has been consumed by a hardware encoder. Actual hardware encoder byte savings must be benchmarked only after a concrete adapter exists.
 
-## Realtime readiness: exact claim
+## Verification added in PR #5
 
-Implemented / valid to claim:
+Python tests cover:
 
-- causal frame-by-frame processing;
-- persistent multi-ROI state;
-- hard ROI budgets;
-- same-size drop-in optimized frame output;
-- generic source/transform/sink contract;
-- bounded latest-frame Python bridge;
-- explicit continuous-video vs SEND/SKIP semantics;
-- native synchronous middleware API.
+- EvidenceBus fusion/TTL expiration;
+- temporal ROI cache reuse and material-change refresh;
+- background tile cache behavior;
+- low-resolution proposal adapter;
+- latency-horizon application;
+- adaptive controller response above target;
+- full `AdaptiveTransportRuntime` layered/atlas/QP output;
+- context + changed ROI atlas packing.
 
-Not yet universally production-complete:
+Rust tests cover:
 
-- native YUV/NV12 hot path;
-- zero-copy AHardwareBuffer / CVPixelBuffer / DMA-BUF;
-- direct CameraX/AVFoundation/OpenXR source adapters;
-- direct MediaCodec/NVENC/VideoToolbox/VAAPI ROI/QP wiring;
-- concrete WebRTC/RTP/GStreamer adapters;
-- stateful C ABI wrapper;
+- latency horizon application;
+- adaptive controller response;
+- EvidenceBus expiration;
+- temporal region cache change detection;
+- native RGB region signatures;
+- low-resolution analysis sizing.
+
+PR #5 must pass Python tests and Rust `cargo test --all-targets` + release build on Ubuntu/macOS/Windows before merge.
+
+## Exact implementation boundary
+
+Implemented / valid to claim after PR #5 merges:
+
+- same-size foveated transport;
+- multi-source relevance fusion;
+- low-res analysis/full-res preservation;
+- persistent predictive multi-ROI state;
+- latency-aware prediction horizon;
+- temporal ROI reuse;
+- static-background tile reuse;
+- low-res base + changed high-res enhancement payload;
+- one-image context+ROI atlas;
+- portable encoder delta-QP hints;
+- adaptive target bitrate/pixel-budget control;
+- native control-plane equivalents;
+- reproducible benchmark runner.
+
+Still adapter/platform work, not valid to claim as complete:
+
+- direct MediaCodec/NVENC/VideoToolbox/VAAPI QP wiring;
+- native NV12/YUV hot path;
+- zero-copy AHardwareBuffer/CVPixelBuffer/DMA-BUF;
+- concrete WebRTC/RTP/GStreamer layered packetization;
+- world-locked background cache for freely moving cameras;
+- stateful C ABI wrapper for the new high-level transport runtime;
 - target-device p50/p95/energy characterization;
-- production downstream task-accuracy validation.
+- downstream task-quality validation across production datasets.
 
-## Next engineering priorities
+## Next priorities after PR #5
 
-### P0 — native frame/pixel-format contract
+### P0 — concrete encoder adapter
 
-1. Add explicit native pixel-format metadata.
-2. Add NV12/YUV input path to avoid RGB round trips.
-3. Add stateful C ABI for `StreamMiddleware`.
+Start with one encoder family and translate `EncoderSpatialHints` into its real spatial ROI/QP API. Benchmark against ordinary CRF/QP changes at equivalent downstream task quality.
 
-### P1 — concrete source/encoder adapters
+### P1 — native pixel formats
 
-1. Android Camera2/CameraX + AHardwareBuffer + MediaCodec.
-2. Apple AVFoundation/CVPixelBuffer/VideoToolbox.
-3. Linux V4L2/GStreamer/DMA-BUF.
-4. Windows Media Foundation / hardware encoder path.
+Add explicit pixel-format/stride contract and NV12/YUV processing to remove RGB round trips.
 
-Adapters must remain outside provider-agnostic core.
+### P2 — moving-camera world cache
 
-### P2 — benchmark / task quality
+Use camera pose/homography/depth where available to keep a world-locked cache instead of invalidating all background tiles during camera motion.
 
-Measure bytes/pixels/tokens, p50/p95 latency, queue drops, CPU/GPU/NPU/energy and downstream task quality on real target devices.
+### P3 — downstream quality benchmark
 
-## Win condition
+Compare full resolution, global quality reduction, global downscale, same-size foveation, layered context+ROI, temporal cache and encoder-QP mode at equal downstream task quality.
 
-A developer should be able to change:
+## Product win condition
 
-```python
-frame = camera.read()
-downstream.send(frame)
-```
+> Lower bytes / decoded pixels / visual tokens / requests / latency / energy at equivalent downstream task quality and bounded important-region miss probability.
 
-to:
-
-```python
-frame = camera.read()
-optimized = optimizer.transform(frame)
-downstream.send(optimized.frame_rgb)
-```
-
-without rewriting their camera stack, transport, model client or encoder architecture.
+The SDK is useful only if the integration remains simpler than rebuilding these policies independently in every camera/vision application.
