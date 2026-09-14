@@ -1,0 +1,1 @@
+Binary benchmark assets are being materialized from the user-provided gallery.
