@@ -158,6 +158,7 @@ from .tiles import (
     TileQualityFn,
     TileResolutionFn,
     TileQpFn,
+    apply_tile_plan,
     plan_tiles,
     rasterize_tile_plan,
     render_tile_plan,
