@@ -1,0 +1,91 @@
+{
+  "schema": "foveastream.showcase.v2",
+  "source": "synthetic deterministic multi-motion scene",
+  "preset": "aggressive",
+  "output_fps": 6.0,
+  "frames": 24,
+  "tile_variants": [
+    {
+      "name": "02_tiles_10_linear",
+      "tiles": 10,
+      "curve": "linear",
+      "strength": 1.0
+    },
+    {
+      "name": "03_tiles_25_smoothstep",
+      "tiles": 25,
+      "curve": "smoothstep",
+      "strength": 1.0
+    },
+    {
+      "name": "04_tiles_100_gaussian",
+      "tiles": 100,
+      "curve": "gaussian",
+      "strength": 3.0
+    },
+    {
+      "name": "05_tiles_100_exponential",
+      "tiles": 100,
+      "curve": "exponential",
+      "strength": 3.0
+    },
+    {
+      "name": "06_tiles_400_gaussian",
+      "tiles": 400,
+      "curve": "gaussian",
+      "strength": 3.0
+    }
+  ],
+  "outputs": {
+    "01_multi_roi": {
+      "mp4": "docs/assets/showcase/01_multi_roi.mp4",
+      "gif": "docs/assets/showcase/01_multi_roi.gif",
+      "frames": 24
+    },
+    "02_tiles_10_linear": {
+      "mp4": "docs/assets/showcase/02_tiles_10_linear.mp4",
+      "gif": "docs/assets/showcase/02_tiles_10_linear.gif",
+      "frames": 24,
+      "mean_effective_pixel_fraction": 0.4476647157612379
+    },
+    "03_tiles_25_smoothstep": {
+      "mp4": "docs/assets/showcase/03_tiles_25_smoothstep.mp4",
+      "gif": "docs/assets/showcase/03_tiles_25_smoothstep.gif",
+      "frames": 24,
+      "mean_effective_pixel_fraction": 0.40177946337761156
+    },
+    "04_tiles_100_gaussian": {
+      "mp4": "docs/assets/showcase/04_tiles_100_gaussian.mp4",
+      "gif": "docs/assets/showcase/04_tiles_100_gaussian.gif",
+      "frames": 24,
+      "mean_effective_pixel_fraction": 0.33107130963274317
+    },
+    "05_tiles_100_exponential": {
+      "mp4": "docs/assets/showcase/05_tiles_100_exponential.mp4",
+      "gif": "docs/assets/showcase/05_tiles_100_exponential.gif",
+      "frames": 24,
+      "mean_effective_pixel_fraction": 0.19661624720798757
+    },
+    "06_tiles_400_gaussian": {
+      "mp4": "docs/assets/showcase/06_tiles_400_gaussian.mp4",
+      "gif": "docs/assets/showcase/06_tiles_400_gaussian.gif",
+      "frames": 24,
+      "mean_effective_pixel_fraction": 0.2946300255674775
+    },
+    "07_qp_map": {
+      "mp4": "docs/assets/showcase/07_qp_map.mp4",
+      "gif": "docs/assets/showcase/07_qp_map.gif",
+      "frames": 24
+    },
+    "08_temporal_reuse": {
+      "mp4": "docs/assets/showcase/08_temporal_reuse.mp4",
+      "gif": "docs/assets/showcase/08_temporal_reuse.gif",
+      "frames": 24
+    },
+    "09_roi_atlas": {
+      "mp4": "docs/assets/showcase/09_roi_atlas.mp4",
+      "gif": "docs/assets/showcase/09_roi_atlas.gif",
+      "frames": 24
+    }
+  }
+}
