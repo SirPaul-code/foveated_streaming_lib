@@ -20,13 +20,13 @@ Do not turn the core into a Gemini/OpenAI/WebRTC/CameraX-specific client.
 
 ## Current checkpoint
 
-Feature branch: `feat/drop-in-frame-middleware`
+Branch: `main`
 
-PR: `#4 Add drop-in frame middleware for camera pipelines`
+Merged PR: `#4 Add drop-in frame middleware for camera pipelines`
 
-Base main before this work: `c3aab631cd840e20d26cf28cb7f87201ef45534e`
+Merge commit: `77324c90f10a51ec39bb05ca8bb4b996b6516ae2`
 
-Merge status: pending CI/merge at the time this handoff was written. Check PR #4 before claiming the feature is on `main`.
+Package version: `0.2.0` in Python and Rust manifests.
 
 ## Implemented native Rust core
 
@@ -43,7 +43,7 @@ Existing native capabilities:
 - adaptive SEND/SKIP scheduler;
 - synchronous `StreamRuntime`.
 
-New `src/middleware.rs`:
+`src/middleware.rs` adds:
 
 - `EmitPolicy::EveryFrame`;
 - `EmitPolicy::WhenSend`;
@@ -58,7 +58,7 @@ The native middleware remains synchronous and does not own camera threads, queue
 
 ## Implemented Python middleware
 
-New `python/foveastream/middleware.py`:
+`python/foveastream/middleware.py` provides:
 
 - `FramePacket` — RGB frame + monotonic timestamp + opaque metadata + optional relevance evidence;
 - `OptimizedFrame` — same-size optimized frame + preserved timestamp/metadata + full `ProcessResult`;
@@ -90,14 +90,14 @@ bridge = RealtimeBridge(
 camera.on_frame(lambda frame, ts: bridge.submit(frame, ts))
 ```
 
-### Realtime queue rule
+## Realtime queue rule
 
 `RealtimeBridge(drop_policy="latest")` keeps a bounded pending queue and discards stale queued frames when capture outruns processing. The frame currently being processed is never interrupted.
 
-This avoids the failure mode:
+This avoids:
 
 ```text
-60 FPS camera -> 30 FPS processing -> unbounded queue -> increasing end-to-end latency
+60 FPS camera -> 30 FPS processing -> unbounded queue -> increasing latency
 ```
 
 Recommended latency-sensitive behavior:
@@ -126,11 +126,11 @@ Automatic residual-motion proposals are a fallback source. External task detecto
 
 ## Benchmark state
 
-Current checked-in real-video benchmark data remains under:
+Checked-in real-video benchmark data:
 
 `docs/assets/real_demo/benchmark_presets_2026-09-14.json`
 
-Aggressive reference results from the two sample clips:
+Aggressive reference results:
 
 - example1: 71.30% same-encoder H.264 saving; 96.26% context+ROI pixel saving;
 - example2: 31.34% same-encoder H.264 saving; 84.08% context+ROI pixel saving.
@@ -151,26 +151,31 @@ Examples:
 - `examples/live_webcam.py` — inline camera -> `FoveaStreamTransform` -> preview;
 - `examples/custom_sink_adapter.py` — callback camera -> bounded `RealtimeBridge` -> arbitrary sink.
 
-## Verification in this PR
+## Verification
 
-New Python tests cover:
+PR #4 passed the complete configured CI matrix before merge:
+
+- Python install/tests on Ubuntu — **PASS**;
+- Rust `cargo test --all-targets` + `cargo build --release` on Ubuntu — **PASS**;
+- Rust `cargo test --all-targets` + `cargo build --release` on macOS — **PASS**;
+- Rust `cargo test --all-targets` + `cargo build --release` on Windows — **PASS**.
+
+Python middleware regression coverage includes:
 
 - same-size output shape;
 - timestamp preservation;
 - metadata preservation;
-- `EveryFrame` default behavior;
+- `EveryFrame` behavior;
 - `WhenSend` suppression;
 - synchronous source -> transform -> sink wiring;
 - deterministic latest-frame queue dropping;
 - worker error propagation.
 
-New Rust tests cover:
+Rust middleware tests cover:
 
-- every-frame middleware semantics;
+- every-frame semantics;
 - scheduler-based suppression;
 - sink invocation only for emitted results.
-
-CI must pass Python tests and Rust test/release builds on Ubuntu, Windows and macOS before merge.
 
 ## Realtime readiness: exact claim
 
@@ -185,7 +190,7 @@ Implemented / valid to claim:
 - explicit continuous-video vs SEND/SKIP semantics;
 - native synchronous middleware API.
 
-Not yet valid to claim as universally production-complete:
+Not yet universally production-complete:
 
 - native YUV/NV12 hot path;
 - zero-copy AHardwareBuffer / CVPixelBuffer / DMA-BUF;
@@ -198,19 +203,13 @@ Not yet valid to claim as universally production-complete:
 
 ## Next engineering priorities
 
-### P0 — finish middleware checkpoint
+### P0 — native frame/pixel-format contract
 
-1. Get PR #4 green across Python + Rust Linux/Windows/macOS.
-2. Merge to `main`.
-3. Keep README and `docs/FRAME_MIDDLEWARE.md` aligned with actual public APIs.
-
-### P1 — pixel-format/native path
-
-1. Add explicit frame pixel-format contract.
+1. Add explicit native pixel-format metadata.
 2. Add NV12/YUV input path to avoid RGB round trips.
 3. Add stateful C ABI for `StreamMiddleware`.
 
-### P2 — concrete source/encoder adapters
+### P1 — concrete source/encoder adapters
 
 1. Android Camera2/CameraX + AHardwareBuffer + MediaCodec.
 2. Apple AVFoundation/CVPixelBuffer/VideoToolbox.
@@ -219,7 +218,7 @@ Not yet valid to claim as universally production-complete:
 
 Adapters must remain outside provider-agnostic core.
 
-### P3 — benchmark / task quality
+### P2 — benchmark / task quality
 
 Measure bytes/pixels/tokens, p50/p95 latency, queue drops, CPU/GPU/NPU/energy and downstream task quality on real target devices.
 
@@ -236,7 +235,7 @@ to:
 
 ```python
 frame = camera.read()
-optimized = foveastream.transform(frame)
+optimized = optimizer.transform(frame)
 downstream.send(optimized.frame_rgb)
 ```
 
