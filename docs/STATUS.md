@@ -4,7 +4,7 @@ Last updated: 2026-09-14
 
 ## Goal
 
-Build a provider-agnostic adaptive relevance transport SDK that can be inserted between an existing camera/frame source and an existing encoder, transport, model or callback without forcing either side to adopt FoveaStream internals.
+Build a provider-agnostic adaptive relevance transport SDK that can sit between an existing camera/frame source and an existing encoder, transport, model or callback.
 
 Stable product boundary:
 
@@ -20,335 +20,286 @@ Do not turn core into a Gemini/OpenAI/WebRTC/CameraX-specific client.
 
 ## Current checkpoint
 
-Branch: `main`
+Feature branch: `docs/readme-adaptive-video-quickstart`
 
-Merged PR: `#5 Add adaptive relevance transport stack`
+Base before this branch: `main` at `e4ea068cbbde82035c2b586e3682d0c64121b676`.
 
-Squash merge commit: `81c9be9e5122a2dec7809b70add97818f4ed7be3`
+This branch adds a complete README rewrite, arbitrary-video benchmark quickstart, exact-count logical tile planning, visual showcase generation and CI coverage for the new CLIs.
 
-Previous middleware merge: `77324c90f10a51ec39bb05ca8bb4b996b6516ae2`
+At the time this handoff was written the branch had not yet been merged. Check the PR/CI state before claiming these additions are on `main`.
 
-Package version: `0.3.0` in Python and Rust manifests.
+Package version remains `0.3.0`.
 
-## Verification
+## Previously merged adaptive stack
 
-PR #5 passed the configured CI matrix before merge:
+Already on main before this branch:
 
-- Python install/tests on Ubuntu — **PASS**;
-- Rust `cargo test --all-targets` + `cargo build --release` on Ubuntu — **PASS**;
-- Rust `cargo test --all-targets` + `cargo build --release` on macOS — **PASS**;
-- Rust `cargo test --all-targets` + `cargo build --release` on Windows — **PASS**.
+- causal drop-in `FoveaStreamTransform` middleware;
+- bounded `RealtimeBridge` with latest-frame semantics;
+- multi-source relevance `EvidenceBus`;
+- low-resolution proposal analysis;
+- persistent predictive multi-ROI tracking;
+- latency-aware future ROI prediction;
+- hard total ROI-area budget;
+- same-size foveated frame output;
+- context + multiple high-resolution ROI views;
+- temporal ROI cache;
+- opt-in background tile cache;
+- layered context + changed-ROI payload;
+- packed one-image context+ROI atlas;
+- portable encoder delta-QP hints;
+- adaptive bitrate/pixel-budget controller;
+- SEND/SKIP recommendation;
+- native Rust control-plane primitives.
 
-The first native CI run exposed only invalid shorthand Rust float literals in new tests (`.1`, `.02`, etc.). They were corrected before the final green run.
+## New logical tile planner
 
-## Existing drop-in middleware
+### Python: `python/foveastream/tiles.py`
 
-The merged middleware layer provides:
+The logical tile planner is a new actuator derived from the existing continuous relevance field.
 
-- causal frame-by-frame processing;
-- `FoveaStreamTransform` as a same-size drop-in transform;
-- `FramePacket` / `OptimizedFrame`;
-- bounded `RealtimeBridge` with `latest` drop policy;
-- continuous-video `every_frame` semantics;
-- opt-in scheduler-driven `when_send` semantics;
-- persistent multi-ROI tracking;
-- same-size foveated RGB;
-- low-resolution context + ROI views;
-- block delta-QP maps;
-- native Rust middleware API.
+It is intentionally separate from codec-native QP blocks.
 
-Recommended latency-sensitive topology:
-
-```text
-capture callback
-    -> bounded queue depth 1 / latest
-    -> FoveaStream
-    -> encoder / model / transport
-```
-
-Do not use an unbounded queue for realtime capture. If capture outruns processing, prefer the freshest pending frame rather than accumulating latency.
-
-## Adaptive transport stack
-
-### Python: `python/foveastream/optimization.py`
-
-#### `EvidenceBus`
-
-Timestamped, TTL-bound relevance fusion from arbitrary independent sources.
-
-A source may publish:
-
-- ROI proposals;
-- points;
-- dense relevance/quality maps;
-- a source weight.
-
-Dense map fusion supports:
-
-- `max`;
-- `noisy_or`;
-- clipped additive fusion.
-
-Dense fused maps can be converted to class-agnostic ROI proposals before entering the persistent tracker.
-
-Do not hardcode face/person/car semantics into this layer. Relevance may come from motion, gaze, OCR, a detector, user interaction, an AR anchor, task state, model feedback, or another application-specific source.
-
-#### `LowResProposalAdapter`
-
-Runs arbitrary proposal logic on a downscaled analysis image while preserving the original full-resolution frame for output/encoding.
-
-Coordinates remain normalized, so the proposal source does not need resolution-specific coordinate conversion.
-
-#### `LatencyBudget`
-
-Maps expected capture/analysis/encode/network/decode/consumer delay to the tracker prediction horizon.
-
-The runtime therefore protects where a tracked region is expected to matter after downstream latency, not only where it was at capture time.
-
-The horizon is clamped by `max_horizon_s`.
-
-#### `TemporalRoiCache`
-
-Caches high-resolution ROI enhancements using persistent track/ROI association.
-
-Behavior:
-
-```text
-first ROI                    -> SEND
-same ROI materially same     -> REUSE cached high-res ROI
-same ROI materially same     -> REUSE cached high-res ROI
-material change              -> SEND
-max-refresh timeout          -> SEND
-```
-
-Change is measured against the **last emitted ROI state**, not merely the immediately previous frame. Slow cumulative changes therefore eventually trigger a refresh.
-
-#### `BackgroundTileCache`
-
-Opt-in tile delta cache for mostly static cameras/backgrounds.
-
-It emits only tiles whose signature changed or whose refresh timeout expired.
-
-This is intentionally **disabled by default**. A freely moving camera invalidates many background tiles unless the host first performs camera/world-motion compensation.
-
-#### `LayeredPayload`
-
-Represents:
-
-```text
-low-resolution whole-scene base
-+
-changed high-resolution ROI enhancements
-+
-optional changed background tiles
-```
-
-This supports base + enhancement transport while preserving global scene context even if an enhancement is delayed or omitted.
-
-#### Packed ROI atlas
-
-`pack_roi_atlas(...)` packs:
-
-- global context;
-- only changed ROI enhancements;
-
-into one ordinary RGB image plus placement/source metadata.
-
-Use this for consumers that accept one image but cannot accept a list of context + ROI images.
-
-#### `EncoderSpatialHints`
-
-Portable encoder control-plane contract:
-
-- encoder block size;
-- signed `int8` delta-QP map;
-- active normalized ROIs;
-- fovea/periphery reference QP deltas;
-- row-major byte export for native adapters.
-
-**This is not a fake claim of completed NVENC/MediaCodec/VideoToolbox integration.** A concrete encoder adapter must translate these hints into the actual platform encoder API.
-
-#### `AdaptiveBudgetController`
-
-Closed-loop spatial budget controller driven by actual encoder bitrate and/or layered payload pixel fraction.
-
-Instead of assuming a fixed preset always hits a fixed network budget, it continuously adjusts:
-
-- peripheral scale;
-- falloff width;
-- total ROI budget;
-- max active ROI count;
-- context scale;
-- quality floor;
-- uncertainty floor;
-- periphery delta-QP.
-
-`balanced`, `aggressive`, and `extreme` remain useful initial conditions.
-
-#### `AdaptiveTransportRuntime`
-
-Canonical high-level orchestration:
-
-```text
-EvidenceBus
-    -> cheap/local relevance analysis
-    -> predictive persistent multi-ROI runtime
-    -> temporal ROI cache
-    -> optional static-background tile cache
-    -> layered base + enhancement payload
-    -> optional one-image atlas
-    -> portable encoder spatial hints
-    -> optional adaptive bitrate/pixel controller
-```
-
-Drop-in path remains simple:
+Configuration:
 
 ```python
-out = optimizer.process(frame_rgb, timestamp_s)
-downstream.send(out.frame_rgb)
+TilePlannerConfig(
+    target_tiles=100,
+    curve="gaussian",
+    curve_strength=3.0,
+    aggregation="max",
+    min_quality=0.04,
+    min_resolution_scale=0.125,
+    fovea_qp_delta=-4,
+    periphery_qp_delta=18,
+)
 ```
 
-Advanced consumers can choose:
+Properties:
 
-```python
-out.layered.context
-out.layered.changed_rois
-out.layered.background_updates
-out.layered.atlas
-out.encoder_hints.qp_delta_map
-out.process_result.decision
+- `target_tiles` is exact, including non-square counts such as 10, 25, 100, 137 or 400;
+- tiles cover the whole frame and are near-rectangular with layout following source aspect ratio;
+- per-tile relevance comes from the continuous quality/relevance map;
+- aggregation modes: `max`, `p90`, `mean`;
+- built-in degradation curves: `linear`, `smoothstep`, `gaussian`, `exponential`, `power`;
+- Python callers may provide a custom `distance -> quality` degradation callback;
+- each tile receives quality, resolution scale and delta-QP recommendation;
+- `effective_pixel_fraction` estimates multi-resolution raster cost as `sum(area * scale^2)`;
+- `rasterize_tile_plan(...)` converts the discrete tile plan back to an HxW field;
+- `render_tile_plan(...)` produces a visual debug overlay.
+
+Important invariant:
+
+```text
+continuous relevance field
+    +--> logical TilePlan       exact N transport/application tiles
+    +--> encoder QP map         codec block grid, e.g. 16x16
 ```
 
-## Native Rust control plane
+A 100-tile logical plan does not mean the codec has only 100 coding blocks. Both actuators may coexist.
 
-`src/transport.rs` exports provider-independent native primitives for:
+### Native Rust: `src/tiles.rs`
 
-- `LatencyBudget`;
-- `AdaptiveBudgetConfig` / `AdaptiveBudgetController` / `AdaptiveBudgetState`;
-- `EvidenceBus` / `EvidenceRecord`;
-- `RegionSignature` / `signature_rgb8`;
-- `TemporalRegionCache`;
-- `EncoderSpatialHints`;
-- low-resolution `analysis_dimensions`.
+Exports:
 
-The Rust layer intentionally does not pretend that a generic QP map is already wired into every hardware encoder.
+- `TileCurve`;
+- `TileAggregation`;
+- `TilePlannerConfig`;
+- `TileDecision`;
+- `TilePlan`;
+- `plan_tiles(...)`.
 
-## Examples and documentation
+Rust currently provides built-in curves. Arbitrary user callback degradation is a Python/API-level feature; native hosts can post-process or add their own adapter policy if needed.
 
-Primary reading order for another coding agent:
+## Arbitrary-video quickstart
 
-1. `AGENTS.md`
-2. `docs/ADAPTIVE_TRANSPORT.md`
-3. `docs/FRAME_MIDDLEWARE.md`
-4. `docs/AGENT_INTEGRATION.md`
-5. this `docs/STATUS.md`
-6. `docs/REALTIME_STREAMING_STATUS.md`
+`examples/adaptive_transport.py` now accepts either a live camera or an ordinary video file:
 
-Examples:
+```powershell
+python examples\adaptive_transport.py --video example3.mp4 --preset aggressive
+```
 
-- `examples/live_webcam.py` — drop-in live camera transform;
-- `examples/custom_sink_adapter.py` — bounded realtime source -> transform -> arbitrary sink;
-- `examples/adaptive_transport.py` — adaptive transport stack including layered/atlas/QP paths.
+Tile visualization is enabled by default with 100 Gaussian logical tiles and may be configured through:
 
-## Benchmarking
+```text
+--tiles
+--tile-curve
+--tile-strength
+--tile-aggregation
+--tile-min-quality
+--tile-min-scale
+--no-tile-overlay
+```
 
-Existing checked-in real-video codec benchmark remains authoritative for current same-encoder H.264 byte results:
+The example prints mean processing time, effective FPS, ROI count, temporal reuse, layered pixel fraction and logical-tile effective pixel fraction.
 
-- `example1` aggressive: **71.30%** H.264 saving; **96.26%** context+ROI pixel saving;
-- `example2` aggressive: **31.34%** H.264 saving; **84.08%** context+ROI pixel saving.
+## One-command benchmark suite
 
-Those are reference-video measurements, not universal task-quality or target-device latency claims.
+New:
 
-New runner:
+`bench/benchmark_suite.py`
 
-`bench/benchmark_transport_stack.py`
+Recommended command:
 
-It records:
+```powershell
+python bench\benchmark_suite.py example3.mp4 --preset aggressive --tiles 100 --tile-curve gaussian
+```
 
-- mean / p50 / p95 / p99 preprocessing latency;
-- effective processing throughput;
-- active ROI count;
-- changed ROI count;
+It runs both:
+
+1. same-encoder H.264 baseline vs foveated RGB benchmark;
+2. adaptive transport benchmark.
+
+Combined report includes:
+
+- source hash and metadata;
+- H.264 bytes saved;
+- context+ROI pixel saving;
+- codec processing time;
+- adaptive mean/p50/p95/p99 processing time;
+- active and changed ROI counts;
 - temporal ROI reuse fraction;
 - layered payload pixel fraction;
 - atlas pixel fraction;
-- background changed-tile rate;
-- delta-QP statistics;
-- adaptive controller state;
-- source hash/environment metadata.
+- portable delta-QP statistics;
+- controller state;
+- logical tile count/curve;
+- logical-tile effective pixel fraction and mean tile quality/QP.
 
-Example:
+## Showcase generator
 
-```bash
-python bench/benchmark_transport_stack.py example1.mp4 example2.mp4 \
-  --preset aggressive \
-  --out output/transport_benchmark.json
+New:
+
+`examples/generate_showcase.py`
+
+Real input:
+
+```powershell
+python examples\generate_showcase.py example3.mp4 --outdir output\showcase_example3
 ```
 
-This benchmark does not claim hardware-encoder QP savings until a concrete encoder adapter actually consumes `EncoderSpatialHints`.
+Deterministic documentation input:
+
+```powershell
+python examples\generate_showcase.py --synthetic
+```
+
+It produces nine MP4/GIF views:
+
+1. multi-ROI relevance;
+2. 10 tiles / linear;
+3. 25 tiles / smoothstep;
+4. 100 tiles / Gaussian;
+5. 100 tiles / exponential;
+6. 400 tiles / Gaussian;
+7. encoder delta-QP map;
+8. temporal ROI SEND vs REUSE;
+9. packed context+changed-ROI atlas.
+
+`.github/workflows/showcase.yml` regenerates documentation GIFs from the deterministic synthetic scene after relevant changes land on `main`, removes MP4 intermediates and commits only `docs/assets/showcase/*.gif` plus `manifest.json`.
+
+## README
+
+`README.md` was rewritten from scratch around current v0.3 behavior.
+
+It now documents:
+
+- pull/install/test commands for `example3.mp4`;
+- all current actuators;
+- ROI semantics and evidence sources;
+- realtime middleware and latest-frame queue;
+- temporal/background caching;
+- layered payload and atlas;
+- exact-count logical tiles;
+- built-in and custom degradation curves;
+- logical tiles vs codec QP blocks;
+- adaptive control;
+- existing measured H.264 benchmark numbers;
+- benchmark metric definitions;
+- custom-video benchmark recipes;
+- visual showcase GIFs;
+- native Rust usage;
+- current implementation boundary and remaining platform work;
+- commercial-contact licensing.
+
+## Existing authoritative real-video codec numbers
+
+Checked-in real-video benchmark remains authoritative for the current same-encoder H.264 results:
+
+- `example1`, aggressive: **71.30%** H.264 saving and **96.26%** context+ROI pixel saving;
+- `example2`, aggressive: **31.34%** H.264 saving and **84.08%** context+ROI pixel saving.
+
+Those are reference-video measurements, not universal task-quality or target-device latency claims.
+
+## Verification on this branch
+
+Tests added/updated:
+
+- Python exact requested tile count;
+- relevant tile gets more quality, resolution and better QP;
+- custom degradation callback;
+- effective pixel fraction/rasterization bounds;
+- Rust exact tile count;
+- Rust relevant-vs-irrelevant tile quality/QP behavior;
+- CLI syntax/help smoke checks for adaptive video, showcase and benchmark suite.
+
+Before merge this branch must pass:
+
+- Python tests on Ubuntu;
+- Rust `cargo test --all-targets` + release build on Ubuntu;
+- Rust test/release on Windows;
+- Rust test/release on macOS.
 
 ## Exact implementation boundary
 
-Implemented and valid to claim now:
+Valid to claim after this branch merges:
 
-- provider-agnostic drop-in frame middleware;
-- causal frame-by-frame processing;
-- bounded latest-frame realtime queue;
-- persistent predictive multi-ROI state;
-- hard total ROI-area budget;
-- same-size foveated output;
-- context + multiple high-resolution ROIs;
-- multi-source relevance fusion with TTL;
-- low-resolution analysis/full-resolution preservation;
-- latency-aware prediction horizon;
-- temporal ROI reuse;
-- opt-in static-background tile reuse;
-- low-resolution base + changed high-resolution enhancement payload;
-- one-image context+ROI atlas;
-- portable encoder delta-QP hints;
-- adaptive bitrate/pixel-budget controller;
-- Python reference and native Rust control-plane primitives;
-- reproducible transport-stack benchmark runner.
+- all previously merged adaptive transport capabilities;
+- exact-count logical tile planning in Python and Rust;
+- built-in spatial degradation curves;
+- Python custom tile degradation function;
+- tile quality/resolution/QP recommendations;
+- tile effective-pixel estimate;
+- tile preview/rasterization;
+- arbitrary-video adaptive preview;
+- one-command combined benchmark suite;
+- reproducible nine-mode visual showcase generator.
 
-Still adapter/platform work and **not** valid to claim as complete:
+Still adapter/platform work:
 
 - direct MediaCodec/NVENC/VideoToolbox/VAAPI QP wiring;
-- native NV12/YUV hot path;
+- actual tiled WebRTC/RTP/GStreamer packetization;
+- actual codec/transport application of logical tile resolution scale;
+- native NV12/YUV full hot path;
 - zero-copy AHardwareBuffer/CVPixelBuffer/DMA-BUF;
-- concrete WebRTC/RTP/GStreamer layered packetization;
+- CameraX/AVFoundation/OpenXR direct adapters;
 - world-locked background cache for freely moving cameras;
-- stateful C ABI wrapper for the high-level adaptive transport runtime;
+- stateful C ABI for the full adaptive runtime;
 - target-device p50/p95/energy characterization;
-- downstream task-quality validation across production datasets.
+- broad downstream task-quality validation.
 
-## Next priorities
+A tile plan is policy metadata until a downstream adapter consumes its scale/QP recommendations.
 
-### P0 — concrete encoder adapter
+A portable QP map is policy metadata until a concrete encoder consumes it.
 
-Take `EncoderSpatialHints` and wire it to one real encoder family. Benchmark against ordinary global CRF/QP reduction at equivalent downstream task quality.
+## Next engineering priorities
 
-### P1 — native pixel formats
+### P0 — one concrete encoder adapter
 
-Add an explicit pixel-format/stride contract and native NV12/YUV processing to remove RGB round trips.
+Translate `EncoderSpatialHints` to one real encoder family and compare against global CRF/QP reduction at equivalent downstream task quality.
 
-### P2 — moving-camera world cache
+### P1 — one concrete tiled transport adapter
 
-Use pose/homography/depth where available so cached background content remains world-locked instead of invalidating during camera motion.
+Consume `TilePlan` and actually transmit/encode tiles at their requested resolution/quality instead of only visualizing/planning them.
 
-### P3 — downstream quality benchmark
+### P2 — native NV12/YUV and low-copy buffers
 
-Compare at equivalent task quality:
+Remove RGB round trips from production hot paths.
 
-- original full resolution;
-- global CRF/QP reduction;
-- global downscale;
-- same-size foveation;
-- layered context+ROI;
-- temporal ROI reuse;
-- encoder spatial-QP mode.
+### P3 — downstream task-quality benchmark
+
+Compare full resolution, global quality reduction, global downscale, same-size foveation, layered context+ROI, temporal reuse, logical tiles and encoder QP at equivalent downstream model quality.
 
 ## Product win condition
 
 > Lower bytes / decoded pixels / visual tokens / requests / latency / energy at equivalent downstream task quality and bounded important-region miss probability.
-
-The SDK is useful only if integration remains substantially easier than rebuilding these policies independently in every camera/vision application.
