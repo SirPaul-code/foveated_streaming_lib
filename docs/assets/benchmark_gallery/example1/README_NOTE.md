@@ -1,0 +1,1 @@
+Real benchmark gallery assets generated from the user-provided example1 benchmark. README-facing GIFs are lightweight derivatives of those exact benchmark GIFs; source benchmark metrics are preserved separately.
