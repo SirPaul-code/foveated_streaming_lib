@@ -1,0 +1,3 @@
+# Convenience installer for the Python reference runtime, live/video examples and benchmarks.
+# Canonical package metadata stays in pyproject.toml.
+-e .[video]

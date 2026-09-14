@@ -106,3 +106,25 @@ def depth_focus_map(depth,*,focus_xy=(.5,.5),relative_tolerance=.08,softness=2.0
     d=np.asarray(depth,np.float32); h,w=d.shape; x=int(np.clip(round(focus_xy[0]*(w-1)),0,w-1)); y=int(np.clip(round(focus_xy[1]*(h-1)),0,h-1)); target=float(d[y,x]); scale=max(abs(target)*max(relative_tolerance,1e-6),1e-6); return np.exp(-np.power(np.abs(d-target)/scale,max(softness,.1))).astype(np.float32)
 
 def pixel_budget(views):return int(sum(v.shape[0]*v.shape[1] for v in views))
+
+# Provider-agnostic streaming/reference API. Imported last because streaming.py builds on the
+# spatial primitives above; this keeps the core functions usable without the video extra.
+from .streaming import (
+    AdaptiveScheduler,
+    CallbackSink,
+    ClassAgnosticMotionRoiDetector,
+    FoveaStreamRuntime,
+    InnovationSignals,
+    MotionDetectorConfig,
+    MultiRoiTracker,
+    ProcessResult,
+    RoiProposal,
+    RoiTrack,
+    RoiTrackerConfig,
+    SchedulerConfig,
+    SendDecision,
+    StreamRuntimeConfig,
+    StreamSink,
+    roi_iou,
+    run_stream,
+)

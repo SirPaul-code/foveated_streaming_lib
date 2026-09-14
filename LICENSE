@@ -1,0 +1,16 @@
+FoveaStream Proprietary Evaluation License
+Copyright (c) 2026 Pavol Duplinsky. All rights reserved.
+
+The source code, documentation, examples, models, algorithms, interfaces, and other materials in this repository (the "Software") are proprietary.
+
+Permission is granted to access, run, study, test, and modify the Software solely for personal use, academic research, internal evaluation, and other non-commercial research and development purposes, provided that this copyright and license notice is retained.
+
+No commercial rights are granted by this license. Without a separate written commercial license you may not use the Software, in whole or in part, for commercial production, paid services, revenue-generating products, customer deployments, OEM/device integration, resale, sublicensing, commercial redistribution, or commercial hosted/SaaS services.
+
+You may not redistribute or publicly republish the Software or substantial portions of it without prior written permission from the copyright holder.
+
+For commercial licensing, OEM licensing, redistribution rights, or other commercial use, contact:
+
+p.duplinsky@gmail.com
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, ACCURACY, RELIABILITY, OR FITNESS FOR SAFETY-CRITICAL USE. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
