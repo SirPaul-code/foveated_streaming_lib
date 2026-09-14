@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Literal, Sequence
+from typing import Callable, Literal
 import math
 
 import numpy as np
@@ -17,11 +17,54 @@ TileDegradationFn = Callable[[float], float]
 
 
 @dataclass(slots=True)
-class TilePlannerConfig:
-    """Convert a dense relevance field into exactly `target_tiles` logical transport tiles.
+class TilePolicyContext:
+    """All spatial/relevance information available to advanced custom tile policies.
 
-    `curve` maps distance-from-relevance (0 = highly relevant, 1 = irrelevant) to fidelity.
-    A custom `TileDegradationFn` may be supplied to `TilePlanner` instead.
+    Coordinates are normalized to [0,1]. ``relevance`` is the configured aggregate used by the
+    planner while mean/max/p90 are always provided so a custom policy can make a different choice.
+    ``distance`` is ``1 - relevance``.
+    """
+
+    index: int
+    row: int
+    column: int
+    x: float
+    y: float
+    w: float
+    h: float
+    relevance: float
+    distance: float
+    mean_relevance: float
+    max_relevance: float
+    p90_relevance: float
+    map_width: int
+    map_height: int
+
+    @property
+    def center_x(self) -> float:
+        return self.x + self.w * 0.5
+
+    @property
+    def center_y(self) -> float:
+        return self.y + self.h * 0.5
+
+    @property
+    def area_fraction(self) -> float:
+        return self.w * self.h
+
+
+TileQualityFn = Callable[[TilePolicyContext], float]
+TileResolutionFn = Callable[[TilePolicyContext, float], float]
+TileQpFn = Callable[[TilePolicyContext, float], int]
+
+
+@dataclass(slots=True)
+class TilePlannerConfig:
+    """Convert a dense relevance field into exactly ``target_tiles`` logical transport tiles.
+
+    ``curve`` maps distance-from-relevance (0 = highly relevant, 1 = irrelevant) to fidelity.
+    A simple custom ``distance -> quality`` function can be supplied as ``degradation_fn``.
+    Advanced callers may instead provide context-aware quality/resolution/QP hooks to TilePlanner.
     """
 
     target_tiles: int = 100
@@ -94,7 +137,6 @@ class TilePlan:
         return float(sum(t.area_fraction * t.resolution_scale * t.resolution_scale for t in self.tiles))
 
 
-
 def _row_counts(target_tiles: int, aspect: float) -> list[int]:
     """Return row column-counts whose sum is exactly target_tiles and shape follows aspect ratio."""
     n = max(1, int(target_tiles))
@@ -102,7 +144,6 @@ def _row_counts(target_tiles: int, aspect: float) -> list[int]:
     rows = max(1, min(n, round(math.sqrt(n / aspect))))
     base, rem = divmod(n, rows)
     return [base + (1 if row < rem else 0) for row in range(rows)]
-
 
 
 def _builtin_curve(distance: float, curve: TileCurve, strength: float) -> float:
@@ -125,17 +166,37 @@ def _builtin_curve(distance: float, curve: TileCurve, strength: float) -> float:
 
 
 class TilePlanner:
-    """Build a discrete multi-resolution/QP tile policy from a dense relevance map."""
+    """Build a discrete multi-resolution/QP tile policy from a dense relevance map.
+
+    Customization levels, from simplest to most powerful:
+
+    1. ``curve`` / ``curve_strength`` in TilePlannerConfig.
+    2. ``degradation_fn(distance) -> raw_quality``.
+    3. ``quality_fn(context) -> raw_quality`` for geometry/relevance-aware policy.
+    4. ``resolution_fn(context, final_quality) -> scale``.
+    5. ``qp_fn(context, final_quality) -> signed_delta_qp``.
+
+    Configured quality/resolution floors are still enforced after custom callbacks. QP values are
+    clamped to signed int8 range so the result remains compatible with the portable tile contract.
+    """
 
     def __init__(
         self,
         config: TilePlannerConfig | None = None,
         *,
         degradation_fn: TileDegradationFn | None = None,
+        quality_fn: TileQualityFn | None = None,
+        resolution_fn: TileResolutionFn | None = None,
+        qp_fn: TileQpFn | None = None,
     ):
+        if degradation_fn is not None and quality_fn is not None:
+            raise ValueError("use degradation_fn or quality_fn, not both")
         self.config = config or TilePlannerConfig()
         self.config.validate()
         self.degradation_fn = degradation_fn
+        self.quality_fn = quality_fn
+        self.resolution_fn = resolution_fn
+        self.qp_fn = qp_fn
 
     def _aggregate(self, tile: np.ndarray) -> float:
         if tile.size == 0:
@@ -146,15 +207,37 @@ class TilePlanner:
             return float(np.percentile(tile, 90))
         return float(np.max(tile))
 
-    def _quality(self, distance: float) -> float:
-        raw = (
-            float(self.degradation_fn(float(np.clip(distance, 0.0, 1.0))))
-            if self.degradation_fn is not None
-            else _builtin_curve(distance, self.config.curve, self.config.curve_strength)
-        )
-        raw = float(np.clip(raw, 0.0, 1.0))
+    def _raw_quality(self, context: TilePolicyContext) -> float:
+        if self.quality_fn is not None:
+            raw = float(self.quality_fn(context))
+        elif self.degradation_fn is not None:
+            raw = float(self.degradation_fn(context.distance))
+        else:
+            raw = _builtin_curve(context.distance, self.config.curve, self.config.curve_strength)
+        return float(np.clip(raw, 0.0, 1.0))
+
+    def _quality(self, context: TilePolicyContext) -> float:
+        raw = self._raw_quality(context)
         qmin = float(self.config.min_quality)
         return float(np.clip(qmin + (1.0 - qmin) * raw, 0.0, 1.0))
+
+    def _resolution_scale(self, context: TilePolicyContext, quality: float) -> float:
+        smin = float(self.config.min_resolution_scale)
+        if self.resolution_fn is not None:
+            raw = float(self.resolution_fn(context, quality))
+        else:
+            raw = smin + (1.0 - smin) * quality
+        return float(np.clip(raw, smin, 1.0))
+
+    def _qp_delta(self, context: TilePolicyContext, quality: float) -> int:
+        if self.qp_fn is not None:
+            qp = int(round(self.qp_fn(context, quality)))
+        else:
+            qp = round(
+                self.config.periphery_qp_delta
+                + quality * (self.config.fovea_qp_delta - self.config.periphery_qp_delta)
+            )
+        return int(np.clip(qp, -128, 127))
 
     def plan(self, quality_map: np.ndarray) -> TilePlan:
         qmap = np.clip(np.asarray(quality_map, np.float32), 0.0, 1.0)
@@ -174,16 +257,12 @@ class TilePlanner:
             for col in range(cols):
                 x0 = round(col * w / cols)
                 x1 = round((col + 1) * w / cols)
-                relevance = float(np.clip(self._aggregate(qmap[y0:y1, x0:x1]), 0.0, 1.0))
-                distance = 1.0 - relevance
-                quality = self._quality(distance)
-                smin = float(self.config.min_resolution_scale)
-                resolution_scale = float(np.clip(smin + (1.0 - smin) * quality, smin, 1.0))
-                qp = round(
-                    self.config.periphery_qp_delta
-                    + quality * (self.config.fovea_qp_delta - self.config.periphery_qp_delta)
-                )
-                decisions.append(TileDecision(
+                tile_values = qmap[y0:y1, x0:x1]
+                mean_rel = float(np.mean(tile_values)) if tile_values.size else 0.0
+                max_rel = float(np.max(tile_values)) if tile_values.size else 0.0
+                p90_rel = float(np.percentile(tile_values, 90)) if tile_values.size else 0.0
+                relevance = float(np.clip(self._aggregate(tile_values), 0.0, 1.0))
+                context = TilePolicyContext(
                     index=idx,
                     row=row,
                     column=col,
@@ -192,17 +271,37 @@ class TilePlanner:
                     w=(x1 - x0) / w,
                     h=(y1 - y0) / h,
                     relevance=relevance,
-                    distance=distance,
+                    distance=1.0 - relevance,
+                    mean_relevance=float(np.clip(mean_rel, 0.0, 1.0)),
+                    max_relevance=float(np.clip(max_rel, 0.0, 1.0)),
+                    p90_relevance=float(np.clip(p90_rel, 0.0, 1.0)),
+                    map_width=w,
+                    map_height=h,
+                )
+                quality = self._quality(context)
+                resolution_scale = self._resolution_scale(context, quality)
+                qp_delta = self._qp_delta(context, quality)
+                decisions.append(TileDecision(
+                    index=idx,
+                    row=row,
+                    column=col,
+                    x=context.x,
+                    y=context.y,
+                    w=context.w,
+                    h=context.h,
+                    relevance=relevance,
+                    distance=context.distance,
                     quality=quality,
                     resolution_scale=resolution_scale,
-                    qp_delta=int(np.clip(qp, -128, 127)),
+                    qp_delta=qp_delta,
                 ))
                 idx += 1
 
+        custom = self.degradation_fn is not None or self.quality_fn is not None
         return TilePlan(
             requested_tiles=self.config.target_tiles,
             tiles=decisions,
-            curve="custom" if self.degradation_fn is not None else self.config.curve,
+            curve="custom" if custom else self.config.curve,
             curve_strength=self.config.curve_strength,
             aggregation=self.config.aggregation,
             min_quality=self.config.min_quality,
@@ -215,8 +314,17 @@ def plan_tiles(
     config: TilePlannerConfig | None = None,
     *,
     degradation_fn: TileDegradationFn | None = None,
+    quality_fn: TileQualityFn | None = None,
+    resolution_fn: TileResolutionFn | None = None,
+    qp_fn: TileQpFn | None = None,
 ) -> TilePlan:
-    return TilePlanner(config, degradation_fn=degradation_fn).plan(quality_map)
+    return TilePlanner(
+        config,
+        degradation_fn=degradation_fn,
+        quality_fn=quality_fn,
+        resolution_fn=resolution_fn,
+        qp_fn=qp_fn,
+    ).plan(quality_map)
 
 
 def rasterize_tile_plan(plan: TilePlan, width: int, height: int, *, field: str = "quality") -> np.ndarray:
