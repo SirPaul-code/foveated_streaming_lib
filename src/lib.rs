@@ -9,6 +9,7 @@ mod resample;
 mod roi;
 mod scheduler;
 mod streaming;
+mod transport;
 mod types;
 
 pub use atlas::{context_and_roi_views, ImageView};
@@ -26,4 +27,9 @@ pub use scheduler::{
     AdaptiveScheduler, InnovationSignals, SchedulerConfig, SendDecision, SendReason,
 };
 pub use streaming::{FrameInput, ProcessResult, StreamError, StreamRuntime, StreamRuntimeConfig, StreamSink};
+pub use transport::{
+    analysis_dimensions, signature_rgb8, AdaptiveBudgetConfig, AdaptiveBudgetController,
+    AdaptiveBudgetState, CacheDecision, EncoderSpatialHints, EvidenceBus, EvidenceRecord,
+    LatencyBudget, RegionSignature, TemporalCacheConfig, TemporalRegionCache,
+};
 pub use types::{Falloff, FocusCandidate, FoveationConfig, Point2, RoiRect};
