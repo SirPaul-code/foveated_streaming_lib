@@ -20,25 +20,31 @@ Do not turn core into a Gemini/OpenAI/WebRTC/CameraX-specific client.
 
 ## Current checkpoint
 
-PR #6 `Add configurable relevance tiles, full README and visual showcase` is merged.
+Feature branch: `feat/full-docs-benchmark-gallery`
 
-- squash merge: `9baaec5bad51e5501fef01b9851678684c833d8d`
-- showcase asset generation commit: `1afbe6480e9c66ee624c8da338a056fa3e479f78`
-- `AGENTS.md` tile/showcase handoff update: `140cc89476192c80a647bb935846d202468af99d`
-- package version: `0.3.0`
+Base main before this branch: `5f82efc524ffec124aae77ac58b4809a4a624f7e`.
 
-PR #6 CI passed before merge:
+Previous PR #6 (`Add configurable relevance tiles, full README and visual showcase`) is already merged and passed Python + Rust CI on Ubuntu/macOS/Windows. The generated nine-mode showcase GIFs are already on main.
 
-- Python tests + CLI smoke checks — PASS;
-- Rust tests + release build on Ubuntu — PASS;
-- Rust tests + release build on macOS — PASS;
-- Rust tests + release build on Windows — PASS.
+This branch adds:
 
-Showcase workflow run `34895753871` also passed and committed all generated documentation GIFs to `main`.
+- advanced custom logical-tile policy hooks;
+- reference realization of logical tile resolution loss;
+- a curated all-modes arbitrary-video benchmark gallery;
+- a complete Python API reference;
+- a complete custom tile-policy guide;
+- a benchmark-gallery guide;
+- copyable custom policy examples;
+- new tests and CLI smoke coverage;
+- a rebuilt README that links the documentation set and makes the all-modes gallery the recommended first workflow.
 
-## Core/adaptive stack now on main
+Package version remains `0.3.0`.
 
-Implemented:
+Do not claim this branch is merged until its PR/CI state has been checked.
+
+## Core/adaptive stack already on main
+
+Implemented before this branch:
 
 - causal frame-by-frame middleware;
 - `FoveaStreamTransform` same-size drop-in output;
@@ -60,92 +66,221 @@ Implemented:
 - arbitrary-video preview/benchmark workflows;
 - reproducible nine-mode visual showcase.
 
-## Logical tile planner
+## Advanced logical tile policy API on this branch
 
 Python: `python/foveastream/tiles.py`
 
-Native: `src/tiles.rs`
-
-Canonical Python config:
+The existing simple API remains valid:
 
 ```python
-TilePlannerConfig(
-    target_tiles=100,
-    curve="gaussian",
-    curve_strength=3.0,
-    aggregation="max",
-    min_quality=0.04,
-    min_resolution_scale=0.125,
-    fovea_qp_delta=-4,
-    periphery_qp_delta=18,
+TilePlanner(
+    TilePlannerConfig(
+        target_tiles=100,
+        curve="gaussian",
+        curve_strength=3.0,
+        aggregation="max",
+        min_quality=0.04,
+        min_resolution_scale=0.125,
+        fovea_qp_delta=-4,
+        periphery_qp_delta=18,
+    )
 )
 ```
 
-Properties:
+New extension context:
 
-- exact requested tile count, including 10/25/100/137/400;
-- full-frame coverage with near-rectangular layout following frame aspect ratio;
-- aggregation modes: `max`, `p90`, `mean`;
-- built-in curves: `linear`, `smoothstep`, `gaussian`, `exponential`, `power`;
-- Python custom `distance -> fidelity` callback;
-- per-tile relevance, distance, quality, resolution scale and delta-QP recommendation;
-- `effective_pixel_fraction = sum(tile_area * resolution_scale^2)` estimate;
-- rasterization/debug visualization helpers.
+```python
+TilePolicyContext
+```
 
-Important invariant:
+It exposes:
 
 ```text
-continuous relevance field
-    +--> logical TilePlan       exact N application/transport tiles
-    +--> encoder QP map         codec block grid, e.g. 16x16
+index / row / column
+x / y / w / h
+center_x / center_y / area_fraction
+relevance / distance
+mean_relevance / max_relevance / p90_relevance
+map_width / map_height
 ```
 
-These are separate actuators and may coexist.
+New custom hooks:
 
-A logical tile plan is policy metadata until a downstream adapter actually transmits/rasterizes/encodes the tiles at requested scale/quality.
+```python
+TilePlanner(
+    config,
+    degradation_fn=distance_to_quality,                 # simple
+)
 
-A QP map is policy metadata until a real encoder consumes it.
+TilePlanner(
+    config,
+    quality_fn=context_to_quality,                      # advanced quality
+    resolution_fn=context_quality_to_resolution_scale, # optional
+    qp_fn=context_quality_to_delta_qp,                  # optional
+)
+```
 
-## Arbitrary-video usage
+Rules:
 
-Full benchmark:
+- `degradation_fn` and `quality_fn` are mutually exclusive;
+- raw quality is clipped to `[0,1]`;
+- configured `min_quality` remains a floor after custom quality;
+- custom resolution is clamped to `[min_resolution_scale,1]`;
+- generic custom QP is clamped to signed int8;
+- concrete codec adapters still need to enforce native codec limits.
+
+New helper:
+
+```python
+apply_tile_plan(frame_rgb, plan)
+```
+
+It downscales each logical tile to its recommended `resolution_scale` and upsamples it back into the same-size output frame. It is a reference/visual implementation, not a production tiled transport.
+
+Copyable policies:
+
+`examples/custom_tile_policy.py`
+
+- `gentle_distance`;
+- `focus_cliff`;
+- `context_aware_quality`;
+- `stepped_resolution`;
+- `tiered_qp`.
+
+## All-modes benchmark gallery
+
+New:
+
+`bench/benchmark_gallery.py`
+
+Recommended command:
 
 ```powershell
-python bench\benchmark_suite.py example3.mp4 --preset aggressive --tiles 100 --tile-curve gaussian
+python bench\benchmark_gallery.py example.mp4
 ```
 
-Adaptive preview:
+Standard matrix creates:
 
-```powershell
-python examples\adaptive_transport.py --video example3.mp4 --preset aggressive --tiles 100 --tile-curve gaussian
+```text
+output/gallery/example/
+  INDEX.md
+  report.json
+  tile_policies.csv
+  tile_matrix_runtime.json
+
+  01_presets/          balanced/aggressive/extreme full codec+transport benchmarks
+  02_core_actuators/   existing 9-mode showcase generated from the user's video
+  03_tile_counts/      10/25/100/400 tile variants
+  04_tile_curves/      linear/smoothstep/gaussian/exponential/power
+  05_tile_aggregation/ mean/p90/max
+  06_custom_policies/  five copyable custom callback policies
 ```
 
-Generate all visual examples from the user's own video:
+`--matrix full` additionally creates:
 
-```powershell
-python examples\generate_showcase.py example3.mp4 --outdir output\showcase_example3
+```text
+07_strength_sweep/
+08_min_scale_sweep/
 ```
 
-## Benchmark suite
+User-provided callbacks may be loaded without editing FoveaStream:
 
-`bench/benchmark_suite.py` combines:
+```text
+--custom-degradation FILE.py:function
+--custom-quality FILE.py:function
+--custom-resolution FILE.py:function
+--custom-qp FILE.py:function
+```
 
-1. same-decoded-frames, same-encoder H.264 baseline vs FoveaStream RGB;
-2. adaptive transport benchmark.
+The user result is written under `09_user_policy/`.
 
-Outputs include:
+Each tile-policy folder contains:
 
-- source hash/metadata;
-- H.264 byte saving;
-- context+ROI pixel saving;
-- codec processing time;
-- adaptive mean/p50/p95/p99;
-- ROI counts and temporal reuse;
-- layered/atlas pixel fraction;
-- QP hint statistics;
-- controller state;
-- logical tile count/curve;
-- logical-tile effective pixel fraction and mean quality/QP.
+```text
+preview.mp4
+preview.gif
+metrics.json
+```
+
+Tile preview:
+
+```text
+left  = actual `apply_tile_plan` spatial degradation
+right = `render_tile_plan` heat/grid
+```
+
+Per-policy metrics:
+
+- planner mean/p95;
+- effective pixel fraction;
+- mean tile quality;
+- mean tile delta-QP;
+- full policy config and artifact paths.
+
+Top-level report additionally records:
+
+- source SHA256/bytes/raster/FPS/duration;
+- Python/platform/OpenCV/NumPy/FFmpeg;
+- git HEAD when available;
+- all preset benchmark records;
+- every logical tile policy record.
+
+The gallery is curated rather than Cartesian: every major algorithmic branch is represented, while `--matrix full` adds useful numeric sweeps without producing thousands of redundant combinations.
+
+## Documentation on this branch
+
+### `README.md`
+
+Rebuilt as the primary user guide. It now starts with the all-modes gallery workflow and contains architecture, all actuators, custom tile hooks, API map, benchmarks, realtime integration and implementation boundaries.
+
+### `docs/API_REFERENCE.md`
+
+Documents the public Python API by purpose, including spatial primitives, ROI tracking, runtime, middleware, evidence fusion, caches, adaptive transport, encoder hints and logical tiles.
+
+### `docs/TILE_POLICIES.md`
+
+Documents exact tile semantics, all built-in curves/aggregations, all four custom policy levels, safety clipping/floors, `apply_tile_plan`, effective pixel accounting and user-policy benchmarking.
+
+### `docs/BENCHMARK_GALLERY.md`
+
+Documents gallery folder layout, standard/full matrices, visual semantics, metrics, custom callback loading and interpretation rules.
+
+### `AGENTS.md`
+
+Updated to make the new docs mandatory reading and preserve custom-policy / benchmark semantic invariants for future coding agents.
+
+## Tests added on this branch
+
+`tests/test_tile_policies.py` covers:
+
+- context-aware quality + custom resolution + custom QP together;
+- rejection of simultaneous `degradation_fn` + `quality_fn`;
+- clipping/floor safety around custom callbacks;
+- `apply_tile_plan` shape preservation and visible low-resolution degradation.
+
+CI smoke checks now compile the new gallery/custom-policy files and invoke `benchmark_gallery.py --help`.
+
+Before merge, verify the complete configured CI matrix:
+
+- Python tests + CLI smoke — must PASS;
+- Rust test/release Ubuntu — must PASS;
+- Rust test/release macOS — must PASS;
+- Rust test/release Windows — must PASS.
+
+## Benchmark interpretation invariant
+
+Different outputs measure different costs:
+
+```text
+same-size foveated H.264 -> actual encoded bytes
+context + ROI            -> actual image raster pixels
+logical tiles            -> estimated multiresolution pixels until a real adapter sends them
+temporal reuse           -> high-resolution update frequency
+QP map                    -> spatial encoder policy until a real encoder consumes it
+SEND/SKIP                 -> emitted request/frame count
+```
+
+Never report `TilePlan.effective_pixel_fraction` as encoded-byte savings.
 
 Existing authoritative codec measurements remain:
 
@@ -154,50 +289,13 @@ Existing authoritative codec measurements remain:
 
 These are reference-video measurements, not universal task-quality/device-latency claims.
 
-## Visual showcase
-
-`examples/generate_showcase.py` supports either a real video or a deterministic synthetic documentation scene.
-
-The docs showcase currently contains:
-
-1. `docs/assets/showcase/01_multi_roi.gif`
-2. `docs/assets/showcase/02_tiles_10_linear.gif`
-3. `docs/assets/showcase/03_tiles_25_smoothstep.gif`
-4. `docs/assets/showcase/04_tiles_100_gaussian.gif`
-5. `docs/assets/showcase/05_tiles_100_exponential.gif`
-6. `docs/assets/showcase/06_tiles_400_gaussian.gif`
-7. `docs/assets/showcase/07_qp_map.gif`
-8. `docs/assets/showcase/08_temporal_reuse.gif`
-9. `docs/assets/showcase/09_roi_atlas.gif`
-10. `docs/assets/showcase/manifest.json`
-
-`.github/workflows/showcase.yml` regenerates these from the deterministic scene after relevant main-branch changes and commits only GIFs + manifest.
-
-## README / agent handoff
-
-`README.md` is now the complete user-facing source for:
-
-- installation/pull commands;
-- integration modes;
-- all actuators;
-- tile count/curves/custom degradation;
-- tiles vs codec QP blocks;
-- realtime queue semantics;
-- current benchmark numbers;
-- arbitrary-video benchmark recipes;
-- visual showcase;
-- native usage;
-- implementation boundary/licensing.
-
-`AGENTS.md` explicitly mirrors the important integration invariants for another coding agent.
-
 ## Still adapter/platform work
 
 Do NOT claim these as complete yet:
 
 - direct MediaCodec/NVENC/VideoToolbox/VAAPI spatial-QP integration;
 - actual WebRTC/RTP/GStreamer logical-tile packetization;
-- actual transport/codec application of `TilePlan.resolution_scale`;
+- real network/codec application of `TilePlan.resolution_scale`;
 - full native NV12/YUV hot path;
 - zero-copy AHardwareBuffer/CVPixelBuffer/DMA-BUF;
 - CameraX/AVFoundation/OpenXR direct camera adapters;
@@ -208,13 +306,13 @@ Do NOT claim these as complete yet:
 
 ## Next priorities
 
-### P0 — concrete encoder adapter
+### P0 — concrete tiled transport adapter
 
-Translate `EncoderSpatialHints` into one real hardware/software encoder API and compare against global CRF/QP reduction at equivalent downstream task quality.
+Consume `TilePlan` and truly send/store/encode the reduced-resolution tile payload instead of only generating policy/reference visualization.
 
-### P1 — concrete tiled transport adapter
+### P1 — concrete encoder adapter
 
-Consume `TilePlan` and truly transmit/encode tiles at their requested resolution/quality rather than only planning/visualizing them.
+Translate `EncoderSpatialHints` into one real encoder API and compare against global CRF/QP reduction at equivalent downstream task quality.
 
 ### P2 — native NV12/YUV + low-copy buffers
 

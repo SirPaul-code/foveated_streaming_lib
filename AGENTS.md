@@ -31,13 +31,16 @@ The core must NOT depend on Gemini, OpenAI, WebRTC, GStreamer, CameraX, AVFounda
 
 ## Read first
 
-1. `README.md` — canonical user/integration usage, benchmark commands and all actuators.
-2. `docs/ADAPTIVE_TRANSPORT.md`
-3. `docs/FRAME_MIDDLEWARE.md`
-4. `docs/AGENT_INTEGRATION.md`
-5. `docs/STATUS.md` — exact current checkpoint and limitations.
-6. `docs/REALTIME_STREAMING_STATUS.md`
-7. `docs/PREDICTIVE_ATTENTION_ARCHITECTURE.md`
+1. `README.md` — canonical user/integration overview and benchmark commands.
+2. `docs/API_REFERENCE.md` — public Python surface.
+3. `docs/TILE_POLICIES.md` — tile planner and custom policy callback contracts.
+4. `docs/BENCHMARK_GALLERY.md` — all-modes arbitrary-video benchmark.
+5. `docs/ADAPTIVE_TRANSPORT.md`
+6. `docs/FRAME_MIDDLEWARE.md`
+7. `docs/AGENT_INTEGRATION.md`
+8. `docs/STATUS.md` — exact current checkpoint and limitations.
+9. `docs/REALTIME_STREAMING_STATUS.md`
+10. `docs/PREDICTIVE_ATTENTION_ARCHITECTURE.md`
 
 ## Install / validate
 
@@ -160,21 +163,84 @@ p90   — robust high-relevance aggregation
 mean  — smooth/aggressive, but can dilute a small important region
 ```
 
-Python may use a custom degradation function:
+### Custom tile-policy invariant
+
+There are four deliberate customization stages. Preserve these contracts instead of adding one-off special cases in the planner.
+
+#### Simple distance-only degradation
 
 ```python
 def degradation(distance: float) -> float:
     return max(0.0, 1.0 - distance ** 1.7)
 
 planner = TilePlanner(
-    TilePlannerConfig(target_tiles=100, min_quality=.03, min_resolution_scale=.10),
+    TilePlannerConfig(target_tiles=100),
     degradation_fn=degradation,
 )
 ```
 
-The callback receives distance in `[0,1]`, where 0 is highly relevant and 1 is irrelevant, and returns raw fidelity in `[0,1]`. `min_quality` remains a hard floor afterward.
+`distance` is `[0,1]`, where 0 is highly relevant. This owns the raw-quality stage.
 
-`plan.effective_pixel_fraction` estimates a multi-resolution tiled raster cost as:
+#### Context-aware quality
+
+```python
+def quality(ctx: TilePolicyContext) -> float:
+    return max(ctx.max_relevance, .8 * ctx.p90_relevance)
+
+planner = TilePlanner(config, quality_fn=quality)
+```
+
+`TilePolicyContext` exposes tile geometry, center/area and mean/max/p90 relevance. `quality_fn` and `degradation_fn` are mutually exclusive because both own raw quality.
+
+#### Custom resolution mapping
+
+```python
+def resolution(ctx, quality):
+    return 1.0 if quality > .8 else .25
+
+planner = TilePlanner(config, resolution_fn=resolution)
+```
+
+Configured `min_resolution_scale` remains a hard floor after the callback.
+
+#### Custom QP mapping
+
+```python
+def qp(ctx, quality):
+    return -6 if quality > .85 else 18
+
+planner = TilePlanner(config, qp_fn=qp)
+```
+
+Custom QP is clamped to signed int8 at the generic API boundary. Native encoder adapters must apply their own real codec limits.
+
+Callbacks may be combined as:
+
+```python
+TilePlanner(
+    config,
+    quality_fn=quality,
+    resolution_fn=resolution,
+    qp_fn=qp,
+)
+```
+
+See `docs/TILE_POLICIES.md` and `examples/custom_tile_policy.py` before modifying this API.
+
+### Reference tile realization
+
+```python
+from foveastream import apply_tile_plan
+preview = apply_tile_plan(frame_rgb, plan)
+```
+
+`apply_tile_plan` downscales each tile according to `resolution_scale` and upscales it back into the same-size frame. It exists for visual verification/reference pipelines.
+
+It is **not** a production tiled transport and not a zero-copy implementation. A real tiled transport should send the lower-resolution tile itself.
+
+### Effective tile cost
+
+`plan.effective_pixel_fraction` estimates:
 
 ```text
 sum(tile_area_fraction * resolution_scale^2)
@@ -314,29 +380,68 @@ Native exports include:
 - `EncoderSpatialHints`;
 - `TilePlannerConfig` / `TilePlan` / `plan_tiles`.
 
+Python currently exposes richer arbitrary callback tile policies. Rust provides built-in deterministic tile curves; keep cross-language semantics aligned where they overlap.
+
 The native core is synchronous. Platform capture threads, bounded queues, zero-copy buffers, encoder threads and sockets belong to host/platform adapters.
 
 ## Benchmark arbitrary videos
 
-Recommended complete benchmark:
+### One configuration
 
 ```bash
-python bench/benchmark_suite.py example3.mp4 --preset aggressive --tiles 100 --tile-curve gaussian
+python bench/benchmark_suite.py example.mp4 --preset aggressive --tiles 100 --tile-curve gaussian
 ```
 
-This runs both:
+Runs same-encoder H.264 + adaptive transport for one selected configuration.
 
-1. same-encoder H.264 baseline vs FoveaStream RGB;
-2. adaptive transport benchmark including temporal reuse, layered/atlas pixels, QP hints and logical tiles.
+### All major modes/settings
 
-Do not confuse estimated pixel load with encoded-byte savings.
+```bash
+python bench/benchmark_gallery.py example.mp4
+```
+
+This is the preferred exploratory/regression command. It creates:
+
+```text
+INDEX.md
+report.json
+tile_policies.csv
+01_presets/
+02_core_actuators/
+03_tile_counts/
+04_tile_curves/
+05_tile_aggregation/
+06_custom_policies/
+```
+
+`--matrix full` also adds strength and minimum-resolution sweeps.
+
+Every tile policy gets `preview.mp4`, `preview.gif`, `metrics.json`.
+
+A user policy can be loaded without editing FoveaStream:
+
+```bash
+python bench/benchmark_gallery.py example.mp4 \
+  --custom-quality my_policy.py:quality \
+  --custom-resolution my_policy.py:resolution \
+  --custom-qp my_policy.py:qp
+```
+
+Do not confuse:
+
+- actual H.264 byte measurements;
+- actual context+ROI raster pixels;
+- estimated logical-tile effective pixels;
+- QP control metadata.
+
+Read `docs/BENCHMARK_GALLERY.md` before changing benchmark semantics.
 
 ## Visual showcase
 
 Generate all visual modes from a real video:
 
 ```bash
-python examples/generate_showcase.py example3.mp4 --outdir output/showcase_example3
+python examples/generate_showcase.py example.mp4 --outdir output/showcase_example
 ```
 
 Reproducible docs showcase:
@@ -388,9 +493,10 @@ Do not claim zero-copy/hardware encoder/tiled packetization until a real adapter
 
 ```bash
 python examples/live_webcam.py --preset aggressive
-python examples/adaptive_transport.py --video example3.mp4 --preset aggressive --tiles 100
+python examples/adaptive_transport.py --video example.mp4 --preset aggressive --tiles 100
 python examples/generate_showcase.py --synthetic
-python bench/benchmark_suite.py example3.mp4 --preset aggressive --tiles 100
+python bench/benchmark_suite.py example.mp4 --preset aggressive --tiles 100
+python bench/benchmark_gallery.py example.mp4 --skip-preset-benchmarks --skip-showcase --no-gif
 pytest -q
 cargo test --all-targets
 cargo build --release
@@ -407,6 +513,8 @@ cargo build --release
 - Temporal reuse has max-refresh protection.
 - Static background cache is opt-in.
 - Logical tiles and codec QP blocks remain separate abstractions.
+- Tile custom policies stay pure/provider-independent callbacks.
+- `apply_tile_plan` remains a reference visual path, not a fake production transport.
 - `EveryFrame` is safe default for continuous video.
 - `WhenSend` is explicit/opt-in.
 - Realtime queues are bounded.
