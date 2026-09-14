@@ -148,6 +148,9 @@ def process(
     processed = 0
     roi_count_sum = 0
     roi_count_max = 0
+    roi_area_sum = 0.0
+    roi_area_max = 0.0
+    quality_mean_sum = 0.0
 
     for src_i in range(frame_count):
         ok, frame = cap.read()
@@ -173,6 +176,9 @@ def process(
         roi_pixels = sum(max(1, round(r.w * width)) * max(1, round(r.h * height)) for r in rois)
         transmitted_pixels += context_pixels + roi_pixels
         roi_count_sum += len(rois); roi_count_max = max(roi_count_max, len(rois))
+        roi_area = sum(r.w * r.h for r in rois)
+        roi_area_sum += roi_area; roi_area_max = max(roi_area_max, roi_area)
+        quality_mean_sum += float(np.mean(q))
 
         if processed % preview_step == 0:
             left = frame.copy(); cv2.putText(left, 'ORIGINAL', (18,36), cv2.FONT_HERSHEY_SIMPLEX,.8,(255,255,255),2,cv2.LINE_AA)
@@ -198,19 +204,27 @@ def process(
         if proc.returncode != 0: raise RuntimeError('ffmpeg encoder failed')
     if not processed: raise SystemExit('ERROR: no frames decoded')
 
+    baseline_bytes = baseline_path.stat().st_size
+    foveated_bytes = foveated_path.stat().st_size
+    source_bytes = src.stat().st_size
     result = {
         'source': src.name,
         'display_width': width, 'display_height': height,
         'source_fps': src_fps, 'benchmark_fps': fps,
         'frames': processed, 'duration_s': processed/fps,
-        'source_bytes': src.stat().st_size,
-        'baseline_reencode_bytes': baseline_path.stat().st_size,
-        'foveated_reencode_bytes': foveated_path.stat().st_size,
-        'h264_byte_saving_pct': 100*(1-foveated_path.stat().st_size/baseline_path.stat().st_size),
+        'source_bytes': source_bytes,
+        'baseline_reencode_bytes': baseline_bytes,
+        'foveated_reencode_bytes': foveated_bytes,
+        'h264_byte_saving_pct': 100*(1-foveated_bytes/baseline_bytes),
+        'source_vs_foveated_saving_pct': 100*(1-foveated_bytes/source_bytes),
         'context_plus_roi_pixel_saving_pct': 100*(1-transmitted_pixels/total_pixels),
         'processing_ms_per_frame': 1000*preprocess_s/processed,
+        'processing_throughput_fps': processed/preprocess_s,
         'mean_active_roi_count': roi_count_sum/processed,
         'max_active_roi_count': roi_count_max,
+        'mean_active_roi_area_fraction': roi_area_sum/processed,
+        'max_active_roi_area_fraction': roi_area_max,
+        'mean_quality': quality_mean_sum/processed,
         'attention_source': 'class-agnostic camera-motion-compensated residual-motion proposals + persistent multi-ROI tracker; no semantic classes required',
         'settings': {
             'peripheral_downscale': peripheral_downscale,
