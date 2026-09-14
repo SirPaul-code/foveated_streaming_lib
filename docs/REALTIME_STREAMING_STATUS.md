@@ -4,171 +4,209 @@ Last updated: 2026-09-14
 
 ## Current status in one sentence
 
-FoveaStream now has a **causal, provider-agnostic push-frame streaming runtime with persistent multi-ROI tracking and a sink contract**, but concrete platform zero-copy capture/encoder integrations and provider/transport adapters remain host/application work.
+FoveaStream has a **causal, provider-agnostic drop-in frame middleware with persistent multi-ROI tracking**, plus a bounded Python latest-frame bridge for callback-driven sources; platform-native zero-copy capture/encoder integrations remain adapter work.
 
-## Implemented now
-
-### Runtime contract
-
-Both Rust and Python expose the same architecture:
+## Preferred realtime contract
 
 ```text
-timestamped frame + arbitrary ROI proposals + optional points/signals
+existing camera / decoded-frame callback
         |
         v
-persistent multi-ROI tracker
+FramePacket
         |
         v
-quality map + scheduler
-        |
-        +--> same-size foveated frame
-        +--> low-res global context + N high-res ROI views
-        +--> encoder delta-QP map
-        +--> SEND/SKIP decision
-        +--> ROI/track metadata
+FoveaStreamTransform / StreamMiddleware
         |
         v
-StreamSink / CallbackSink / arbitrary application adapter
+OptimizedFrame / ProcessResult
+        |
+        v
+existing encoder / transport / model / callback
 ```
 
-Rust entry points:
+The source and destination do not need to know how FoveaStream tracks relevance internally.
 
-- `StreamRuntime`
-- `StreamRuntimeConfig::{balanced, aggressive, extreme}`
-- `FrameInput`
-- `ProcessResult`
-- `StreamSink`
-- `MultiRoiTracker`
-- `RoiProposal`
+## Python middleware
 
-Python entry points:
+Primary entry points:
 
-- `FoveaStreamRuntime`
-- `StreamRuntimeConfig.preset(...)`
-- `ProcessResult`
-- `CallbackSink`
-- `run_stream(...)`
-- `MultiRoiTracker`
-- `RoiProposal`
-- optional `ClassAgnosticMotionRoiDetector`
+- `FramePacket`;
+- `OptimizedFrame`;
+- `FoveaStreamTransform`;
+- `CallbackFrameSink`;
+- `InlinePipeline`;
+- `RealtimeBridge`;
+- `transform_source(...)`.
+
+The simplest inline path is:
+
+```python
+optimizer = FoveaStreamTransform(preset="aggressive")
+optimized = optimizer.transform(frame_rgb, timestamp_s)
+downstream.send(optimized.frame_rgb)
+```
+
+The output frame has the same width/height as the input frame.
+
+## Callback-driven capture / backpressure
+
+`RealtimeBridge` is the reference asynchronous host adapter:
+
+```python
+bridge = RealtimeBridge(
+    optimizer,
+    sink,
+    queue_size=1,
+    drop_policy="latest",
+)
+
+camera.on_frame(lambda frame, ts: bridge.submit(frame, ts))
+```
+
+With `latest`:
+
+- the frame currently being processed finishes normally;
+- the pending queue is bounded;
+- when full, the oldest queued frame is replaced by the newest input;
+- latency therefore does not grow indefinitely when capture outruns processing.
+
+`drop_policy="block"` is available for sources that can accept backpressure and workflows that must process every submitted frame.
+
+The Python bridge exposes counters for submitted, processed, emitted, scheduler-skipped, dropped-input and error frames plus maximum observed queue depth.
+
+## Continuous video vs adaptive request suppression
+
+`FoveaStreamTransform` defaults to:
+
+```text
+emit_policy = every_frame
+```
+
+This is intentional for camera -> encoder/video paths.
+
+For request/event-driven consumers:
+
+```text
+emit_policy = when_send
+```
+
+may suppress redundant frames according to the adaptive scheduler.
+
+SEND/SKIP is therefore not forced onto continuous video transports.
+
+## Native Rust middleware
+
+Rust exposes:
+
+- `StreamMiddleware`;
+- `EmitPolicy::EveryFrame`;
+- `EmitPolicy::WhenSend`;
+- `StreamRuntime`;
+- `FrameInput`;
+- `ProcessResult`;
+- `StreamSink`;
+- `MultiRoiTracker`;
+- `RoiProposal`.
+
+The Rust middleware remains synchronous and causal. Production platform adapters own their camera threads, queues, hardware encoders and network I/O.
 
 ## Multiple ROI support
 
-The runtime no longer assumes a single attention rectangle.
+`MultiRoiTracker` supports zero/one/many simultaneous regions. It:
 
-`MultiRoiTracker` can maintain several independent regions at the same time. It:
-
-- deduplicates overlapping proposals from different evidence sources;
+- deduplicates overlapping proposals;
 - associates proposals to persistent tracks;
 - keeps stable track IDs;
 - estimates rectangle velocity;
-- predicts regions forward by a latency horizon;
+- predicts regions forward;
 - expands stale/uncertain support;
-- ranks regions by confidence and priority;
-- keeps multiple regions under `max_tracks` and a total normalized ROI pixel budget.
+- ranks by confidence and priority;
+- enforces `max_tracks` and a hard total normalized ROI-area budget.
 
-The core intentionally does not contain face/car/person recognition. An ROI is defined only as spatial support that is valuable to the downstream task. Proposal sources are replaceable.
+The core intentionally does not define ROI as face/car/person recognition. ROI proposal sources remain replaceable.
 
-The Python reference includes class-agnostic camera-motion-compensated residual-motion proposals as a useful fallback when the host has no better relevance signal.
+The Python reference includes camera-motion-compensated residual-motion proposals as a fallback when the host has no stronger relevance signal.
 
-## Causality / frame-by-frame operation
+## Causality
 
-The runtime is causal. Frame N can be processed and emitted before frame N+1 exists. It does not require a complete video file or future frames.
+Frame N can be processed and emitted before frame N+1 exists. The runtime requires no complete video file and no future frames.
 
-The real-video benchmark also uses persistent FFmpeg encoder pipes, so the demonstrated processing path is frame sequential rather than batch-only.
+## Output choices
 
-## Transport/provider independence
-
-The runtime does **not** open network connections and does **not** import provider SDKs.
-
-A transport/model adapter consumes `ProcessResult` and chooses one representation:
+A downstream adapter may consume:
 
 ```text
-ordinary video/image consumer  -> foveated frame
+ordinary video/image consumer  -> same-size foveated frame
 multi-image VLM/API            -> context + ROI views
-ROI-aware encoder              -> original frame + QP map
-custom tiled transport         -> ROI metadata / quality map
-redundant frame                -> respect SEND/SKIP and send nothing
+ROI-aware encoder              -> original/native frame + QP map
+custom transport               -> ROI metadata / quality field
+event/request consumer         -> optional SEND/SKIP
 ```
 
-This keeps the same core usable with WebSocket, HTTP, WebRTC, RTP, GStreamer, gRPC, queues, shared memory, local inference or future APIs.
+This keeps the same runtime usable behind HTTP/WebSocket/WebRTC/RTP/GStreamer/gRPC/shared memory/local inference without coupling those protocols to core.
 
-See `docs/AGENT_INTEGRATION.md` and root `AGENTS.md`.
+## What remains platform-native work
 
-## Presets
+Not yet universally production-complete:
 
-Reference presets exist in both the MP4 benchmark and streaming runtime:
-
-- `balanced`
-- `aggressive`
-- `extreme`
-
-The aggressive reference policy uses a 1/16 peripheral scale, 0.15 context scale and a multi-ROI budget. It is intended as a tunable reference point, not a guaranteed quality setting for every task.
-
-## What is still not production platform plumbing
-
-The generic streaming contract is implemented; the following remain concrete adapters/optimizations rather than core runtime features:
-
-- CameraX/Camera2 direct camera adapter;
-- AVFoundation/CVPixelBuffer direct camera adapter;
-- OpenXR/Meta camera adapter;
+- CameraX/Camera2 direct adapter;
+- AVFoundation/CVPixelBuffer direct adapter;
+- OpenXR/Meta direct adapter;
 - native YUV/NV12 hot path;
-- zero-copy AHardwareBuffer / IOSurface / DMA-BUF integration;
-- MediaCodec ROI/QP adapter;
-- NVENC ROI/QP adapter;
-- VideoToolbox/VAAPI-specific actuator integration;
-- concrete WebRTC/RTP/GStreamer clients;
-- provider-specific WebSocket/HTTP SDK clients;
-- host-specific async bounded queues and backpressure;
-- end-to-end latency/energy benchmarks on real target devices.
+- zero-copy AHardwareBuffer / IOSurface / DMA-BUF;
+- direct MediaCodec/NVENC/VideoToolbox/VAAPI ROI/QP wiring;
+- concrete WebRTC/RTP/GStreamer adapters;
+- stateful C ABI wrapper;
+- real-device p50/p95/energy matrix.
 
-Those pieces should plug into the source/sink edges without changing `StreamRuntime` semantics.
+These should plug into the source/sink edges without changing middleware semantics.
 
-## Recommended production host topology
+## Recommended native topology
 
 ```text
-capture / sensor threads
+capture thread/callback
         |
         v
-bounded latest-frame/evidence queue
+bounded latest-frame queue
         |
         v
-FoveaStream analysis/runtime thread
-        |
-        +--> local state continues every analysis frame
+FoveaStream native transform
         |
         v
-bounded selected-output queue
-        |
-        v
-encoder / transport / model adapter thread
+bounded output / encoder / transport path
 ```
 
-Do not use unbounded queues. Under overload, stale frames should be dropped rather than accumulated into seconds of latency.
+Never use an unbounded frame queue for latency-sensitive perception.
 
-Capture FPS, local analysis FPS and output/model FPS are independent.
+## Multi-rate operation
+
+Capture, optimization and model/output rates are independent.
 
 Example:
 
 ```text
 camera:       60 FPS
-ROI analysis: 30-60 FPS
+optimizer:    30-60 FPS depending on target/device
 IMU:          200 Hz
-transport:     5 FPS or event-driven
-model:         whatever the consumer allows
+model:         1-10 FPS or event-driven
 ```
+
+A lower model request rate does not require throwing away local temporal state.
 
 ## Validation requirement
 
-A transport integration is not considered production-ready until it measures:
+Production integrations should measure:
 
-- processing p50/p95;
-- end-to-end latency p50/p95;
-- output frames/s and bytes/s;
-- context + ROI decoded/model pixels/s;
-- active ROI count and area;
-- target coverage / important-region miss rate;
-- downstream task quality against full-frame and simple downscale baselines;
-- CPU/GPU/NPU and energy where relevant.
+- processing latency p50/p95/p99;
+- source FPS / processed FPS;
+- dropped stale input frames;
+- queue depth;
+- end-to-end latency;
+- output bytes/s;
+- decoded/model pixels/s;
+- ROI count/area;
+- important-region miss rate;
+- downstream task quality;
+- CPU/GPU/NPU/energy where relevant.
 
-The product claim remains: **lower total bytes/tokens/latency/energy at equivalent task quality and bounded miss probability**.
+The target remains: **lower bytes/tokens/latency/energy at equivalent task quality and bounded important-region miss probability**.
