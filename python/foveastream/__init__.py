@@ -143,3 +143,30 @@ from .middleware import (
     RealtimeBridge,
     transform_source,
 )
+
+# Higher-level adaptive transport actuators built on the same relevance state/runtime.
+from .optimization import (
+    AdaptiveBudgetConfig,
+    AdaptiveBudgetController,
+    AdaptiveBudgetState,
+    AdaptiveTransportConfig,
+    AdaptiveTransportRuntime,
+    AtlasPlacement,
+    BackgroundTileCache,
+    BackgroundTileCacheConfig,
+    BackgroundTileUpdate,
+    EncoderSpatialHints,
+    EvidenceBus,
+    EvidenceRecord,
+    LatencyBudget,
+    LayeredPayload,
+    LowResProposalAdapter,
+    RelevanceSnapshot,
+    RoiAtlas,
+    RoiEnhancement,
+    TemporalRoiCache,
+    TemporalRoiCacheConfig,
+    TransportResult,
+    pack_roi_atlas,
+    relevance_map_to_proposals,
+)
