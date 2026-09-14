@@ -1,53 +1,48 @@
 # FoveaStream
 
-**Adaptive relevance-aware middleware for camera, video and machine-vision pipelines.**
+**Adaptive relevance-aware middleware for camera, video, VLM and machine-vision pipelines.**
 
-FoveaStream sits between an existing frame source and an existing consumer. It keeps important spatial regions at higher fidelity and spends progressively less bitrate, pixels, resolution, requests, or high-resolution refreshes on less relevant content.
+FoveaStream sits between a frame source and a consumer and decides **where image quality is worth spending**. The same persistent relevance state can drive a normal same-size frame, logical tiles, encoder delta-QP hints, context + ROI layers, temporal reuse, packed atlases, or SEND/SKIP decisions.
 
 ```text
 camera / decoder / RTSP / WebRTC / file / AR glasses / robot
                               |
                               v
                         FoveaStream
-                relevance + temporal state
+                 relevance + temporal state
                               |
-     +-------------+------------+-------------+-------------+------------+
-     |             |            |             |             |            |
-     v             v            v             v             v            v
- same-size      context +    logical       encoder       temporal     SEND/SKIP
-   frame         ROI layers     tiles        QP map         cache        policy
-     |             |            |             |             |            |
-     +-------------+------------+-------------+-------------+------------+
+       +-----------+----------+----------+----------+
+       |           |          |          |          |
+       v           v          v          v          v
+   RGB frame    tiles      QP map    ROI layers   SEND/SKIP
+       |           |          |          |          |
+       +-----------+----------+----------+----------+
                               |
                               v
-                  existing downstream system
+                    existing downstream
 ```
 
-FoveaStream is **provider agnostic**. The core does not depend on Gemini, OpenAI, WebRTC, GStreamer, CameraX, AVFoundation, a specific detector class, a camera vendor, or a model provider.
-
-The same relevance state can drive several different actuators. A host uses the output representation that its downstream stack can actually consume.
+FoveaStream is provider-agnostic. ROI does **not** mean a hardcoded face/person/car class. An ROI is spatial support whose loss of detail would disproportionately hurt the current downstream task.
 
 ---
 
-# Documentation map
+## Real-video result
 
-If you are integrating or extending the project, use these in order:
+These are real-video benchmark outputs, not the synthetic documentation scene.
 
-1. **This README** — architecture, quickstart, all major features and common usage.
-2. [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) — complete Python public API grouped by purpose.
-3. [`docs/TILE_POLICIES.md`](docs/TILE_POLICIES.md) — full tile-policy model and every custom callback hook.
-4. [`docs/BENCHMARK_GALLERY.md`](docs/BENCHMARK_GALLERY.md) — one-command all-modes benchmark on your own video.
-5. [`docs/ADAPTIVE_TRANSPORT.md`](docs/ADAPTIVE_TRANSPORT.md) — adaptive transport internals.
-6. [`docs/FRAME_MIDDLEWARE.md`](docs/FRAME_MIDDLEWARE.md) — source -> transform -> sink middleware contract.
-7. [`docs/AGENT_INTEGRATION.md`](docs/AGENT_INTEGRATION.md) — integration contract for coding agents.
-8. [`docs/STATUS.md`](docs/STATUS.md) — exact current implementation boundary and durable handoff.
-9. [`AGENTS.md`](AGENTS.md) — invariants and rules another coding agent must preserve.
+<p align="center">
+  <img src="docs/assets/real_demo/example1.gif" width="100%" alt="FoveaStream real-video benchmark example 1">
+</p>
+
+<p align="center">
+  <img src="docs/assets/real_demo/example2.gif" width="100%" alt="FoveaStream real-video benchmark example 2">
+</p>
+
+The synthetic `VALVE / circle / polygon` showcase is intentionally **not used in this README**. For documentation screenshots/GIFs, prefer outputs generated from a real input video with `benchmark_gallery.py`.
 
 ---
 
 # Quick start
-
-## Pull latest
 
 ```powershell
 git switch main
@@ -57,7 +52,7 @@ git pull origin main
 python -m pip install -r requirements.txt
 ```
 
-If `.venv` does not exist yet:
+If this is a fresh checkout:
 
 ```powershell
 git clone https://github.com/SirPaul-code/foveated_streaming_lib.git
@@ -66,22 +61,18 @@ cd foveated_streaming_lib
 .\.venv\Scripts\Activate.ps1
 ```
 
-Put a video in the repository root:
+Put your own video in the repository root, for example:
 
 ```text
 foveated_streaming_lib/
   example.mp4
 ```
 
----
-
-# Best first command: run every major mode on your video
+## Run every major mode on your own video
 
 ```powershell
-python bench\benchmark_gallery.py example.mp4
+python bench\benchmark_gallery.py example.mp4 --clean
 ```
-
-This is the recommended discovery workflow. It runs the main FoveaStream algorithms/settings and creates a folder containing videos, GIFs, JSON metrics, preset benchmarks and a human-readable index.
 
 Output:
 
@@ -89,47 +80,18 @@ Output:
 output/gallery/example/
   INDEX.md
   report.json
+  tile_policies.csv
   tile_matrix_runtime.json
 
   01_presets/
-    balanced/
-    aggressive/
-    extreme/
-
   02_core_actuators/
-    multi ROI
-    representative tile modes
-    encoder QP map
-    temporal SEND/REUSE
-    ROI atlas
-
   03_tile_counts/
-    10 tiles
-    25 tiles
-    100 tiles
-    400 tiles
-
   04_tile_curves/
-    linear
-    smoothstep
-    gaussian
-    exponential
-    power
-
   05_tile_aggregation/
-    mean
-    p90
-    max
-
   06_custom_policies/
-    custom distance curve
-    protected-focus cliff
-    context-aware quality
-    stepped resolution
-    tiered QP
 ```
 
-Every logical-tile policy folder contains:
+Every visual tile-policy variant gets its own folder with:
 
 ```text
 preview.mp4
@@ -137,291 +99,36 @@ preview.gif
 metrics.json
 ```
 
-The tile preview is two panels:
+Open `output/gallery/example/INDEX.md` after the run. It is the human-readable index for the experiment.
 
-```text
-left  = actual reference tile-resolution degradation
-right = tile quality heat/grid
-```
-
-For additional numeric sweeps:
+For the larger numeric sweep:
 
 ```powershell
-python bench\benchmark_gallery.py example.mp4 --matrix full
-```
-
-Full gallery documentation: [`docs/BENCHMARK_GALLERY.md`](docs/BENCHMARK_GALLERY.md).
-
----
-
-# Run a single configuration benchmark
-
-```powershell
-python bench\benchmark_suite.py example.mp4 `
-  --preset aggressive `
-  --tiles 100 `
-  --tile-curve gaussian
-```
-
-This runs:
-
-1. same-decoded-frame H.264 baseline vs FoveaStream RGB;
-2. adaptive transport metrics;
-3. logical tile metrics.
-
-Output:
-
-```text
-output/benchmark_suite/example/
-  example_benchmark_suite.json
-  example_transport.json
-  codec/
-    example_baseline_crf23.mp4
-    example_foveated_crf23.mp4
-    example_visualization.mp4
-    example_benchmark.json
+python bench\benchmark_gallery.py example.mp4 --matrix full --clean
 ```
 
 ---
 
-# Watch the adaptive runtime on a video
+# What FoveaStream can output
 
-```powershell
-python examples\adaptive_transport.py `
-  --video example.mp4 `
-  --preset aggressive `
-  --tiles 100 `
-  --tile-curve gaussian
-```
+| Mode | Output | Best fit |
+|---|---|---|
+| Same-size foveated RGB | normal frame, same W×H | drop-in existing encoder/API |
+| Logical tiles | exact N tiles with quality/resolution/QP policy | tiled transport, custom renderer |
+| Encoder delta-QP | block map + original frame | H.264/H.265/AV1 hardware encoder adapter |
+| Context + ROI | low-res scene + high-res relevant regions | VLM / machine vision |
+| Temporal ROI reuse | only changed high-res ROI refreshes | video/VLM with persistent content |
+| Background cache | changed background tiles | stable/static cameras |
+| Packed atlas | context + changed ROIs packed into one image | APIs accepting one image |
+| SEND/SKIP | scheduler decision | request/event pipelines |
 
-Headless:
-
-```powershell
-python examples\adaptive_transport.py `
-  --video example.mp4 `
-  --preset aggressive `
-  --tiles 100 `
-  --tile-curve gaussian `
-  --no-preview
-```
+All of these derive from the **same relevance state**. They are actuators, not separate ROI systems.
 
 ---
 
-# Generate documentation-style GIFs from your own video
+# Logical tiles
 
-```powershell
-python examples\generate_showcase.py example.mp4 `
-  --outdir output\showcase_example
-```
-
-This creates MP4 + GIF visualizations for multi-ROI relevance, several tile modes, QP map, temporal ROI reuse and the packed atlas.
-
----
-
-# What “relevance” means
-
-FoveaStream does **not** define ROI as a face, person, car or another hardcoded semantic class.
-
-An ROI means:
-
-> **Spatial support whose loss of detail would disproportionately hurt the current downstream task.**
-
-Relevance can come from:
-
-- residual motion;
-- user tap / rectangle;
-- eye gaze / software gaze;
-- AR anchor;
-- saliency;
-- OCR/text;
-- depth/autofocus;
-- hand/object interaction;
-- detector/segmenter output;
-- application/task rules;
-- downstream model feedback;
-- remote operator input;
-- a learned relevance model.
-
-Built-in fallback:
-
-```text
-frame t-1 + frame t
-        |
-        v
-sparse feature tracking
-        |
-        v
-global camera-motion estimate
-        |
-        v
-warp previous frame
-        |
-        v
-residual motion
-        |
-        v
-connected components
-        |
-        +--> ROI proposal 1
-        +--> ROI proposal 2
-        +--> ROI proposal N
-```
-
-Motion is only one evidence source. Static but task-critical content should be supplied through stronger task evidence.
-
----
-
-# Architecture
-
-```text
-                         arbitrary evidence
-              motion / gaze / OCR / task / model / depth
-                                 |
-                                 v
-                           EvidenceBus
-                      timestamp + TTL fusion
-                                 |
-                                 v
-                   persistent predictive multi-ROI
-                                 |
-                    latency-aware future state
-                                 |
-                                 v
-                     continuous relevance field
-                                 |
-      +--------------------------+---------------------------+
-      |              |              |            |           |
-      v              v              v            v           v
- same-size RGB   context+ROI   logical tiles   QP blocks   SEND/SKIP
-      |              |              |            |           |
-      |         temporal cache   quality          |           |
-      |              |           resolution       |           |
-      |              |           QP suggestion    |           |
-      |              v              |            |           |
-      |         layered payload     |            |           |
-      |              |              |            |           |
-      |              v              v            |           |
-      |         packed atlas   tiled transport    |           |
-      +-------------------------- downstream ------------------+
-```
-
-Important rule:
-
-> all actuators derive from the same persistent relevance state; do not build separate unrelated ROI systems for each output mode.
-
----
-
-# Main output modes / actuators
-
-## 1. Same-size foveated frame
-
-Minimal drop-in path:
-
-```python
-from foveastream import FoveaStreamTransform
-
-optimizer = FoveaStreamTransform(
-    preset="aggressive",
-    auto_motion_proposals=True,
-)
-
-optimized = optimizer.transform(frame_rgb, timestamp_s)
-downstream.send(optimized.frame_rgb)
-```
-
-Output width/height stays unchanged.
-
-Best for an existing encoder/API that only accepts a normal frame.
-
----
-
-## 2. Context + high-resolution ROI layers
-
-```python
-out = adaptive.process(frame_rgb, timestamp_s)
-
-images = [out.layered.context]
-images += [
-    region.image
-    for region in out.layered.changed_rois
-    if region.image is not None
-]
-
-model.send_images(images)
-```
-
-This reduces actual image pixels when the consumer accepts multiple images/layers.
-
----
-
-## 3. Temporal ROI reuse
-
-```text
-frame 100: ROI A changed -> SEND
-frame 101: ROI A same    -> REUSE
-frame 102: ROI A same    -> REUSE
-frame 103: ROI A same    -> REUSE
-frame 104: ROI A changed -> SEND
-```
-
-Change is measured against the **last emitted high-resolution ROI state**, not just frame `N-1`.
-
-A maximum refresh timeout prevents indefinite stale reuse.
-
----
-
-## 4. Background tile cache
-
-For mostly static image-space backgrounds:
-
-```python
-AdaptiveTransportConfig(background_cache=True)
-```
-
-Do not enable blindly for a freely moving camera. Without world/camera compensation, global motion invalidates many tiles.
-
----
-
-## 5. Layered payload
-
-```text
-low-resolution global context
-+
-changed high-resolution ROI enhancements
-+
-optional changed background tiles
-```
-
-The low-res base preserves whole-scene context while expensive high-resolution content becomes selective and temporal.
-
----
-
-## 6. Packed one-image atlas
-
-For APIs that accept one image but not a list:
-
-```python
-if out.layered.atlas is not None:
-    model.send_image(out.layered.atlas.image)
-```
-
-Conceptually:
-
-```text
-+----------------------------------+
-| low-res whole-scene context      |
-+----------------+-----------------+
-| changed ROI 1  | changed ROI 2   |
-+----------------+-----------------+
-| changed ROI 3                    |
-+----------------------------------+
-```
-
----
-
-## 7. Logical relevance tiles
-
-Exact-count application/transport tiles:
+Logical tiles are application/transport tiles. They are separate from encoder macroblocks/QP blocks.
 
 ```python
 from foveastream import TilePlanner, TilePlannerConfig
@@ -439,10 +146,10 @@ planner = TilePlanner(
     )
 )
 
-plan = planner.plan(out.process_result.quality_map)
+plan = planner.plan(quality_map)
 ```
 
-`target_tiles` is exact:
+`target_tiles` is exact. Examples:
 
 ```python
 TilePlannerConfig(target_tiles=10)
@@ -452,18 +159,19 @@ TilePlannerConfig(target_tiles=137)
 TilePlannerConfig(target_tiles=400)
 ```
 
-Each tile receives:
+Each tile contains normalized geometry plus policy output:
 
 ```text
-normalized x/y/w/h
+index / row / column
+x / y / w / h
 relevance
-distance from relevance
+distance
 quality
 resolution_scale
 qp_delta
 ```
 
-A custom transport might consume it like:
+The core does not force a transport. A custom transport can consume the plan however it wants:
 
 ```python
 for tile in plan.tiles:
@@ -475,53 +183,60 @@ for tile in plan.tiles:
     )
 ```
 
-`send_tile(...)` is adapter pseudocode. The core produces policy; the transport decides how to encode/send it.
+`send_tile()` above is adapter pseudocode.
 
 ---
 
-## 8. Encoder block delta-QP map
+# Supported tile degradation styles
 
-Keep the original source frame and provide a portable spatial quality field to an encoder adapter:
+Built-in distance-to-quality curves:
+
+```text
+linear
+smoothstep
+gaussian
+exponential
+power
+```
+
+Use them directly:
 
 ```python
-out.encoder_hints.block_size
-out.encoder_hints.qp_delta_map
-out.encoder_hints.rois
+TilePlannerConfig(target_tiles=100, curve="linear")
+TilePlannerConfig(target_tiles=100, curve="smoothstep")
+TilePlannerConfig(target_tiles=100, curve="gaussian", curve_strength=3.0)
+TilePlannerConfig(target_tiles=100, curve="exponential", curve_strength=3.0)
+TilePlannerConfig(target_tiles=100, curve="power", curve_strength=3.0)
 ```
 
 Conceptually:
 
 ```text
-original frame ----------------------------+
-                                          |
-FoveaStream relevance -> block delta-QP --+--> encoder
+ROI / high relevance
+████████████████
+██████████████▓▓
+████████▓▓▓▓▒▒▒▒
+▓▓▓▓▒▒▒▒░░░░░░░░
+▒▒░░░░░░░░░░░░░░
+far from relevance
 ```
 
-Direct NVENC/MediaCodec/VideoToolbox/VAAPI translation is platform-adapter work.
+More tiles give finer spatial control. Fewer tiles reduce control/metadata complexity.
+
+```text
+10 tiles   -> coarse policy
+25 tiles   -> coarse/medium
+100 tiles  -> useful general-purpose grid
+400 tiles  -> fine spatial allocation
+```
+
+This is independent from encoder QP-block resolution.
 
 ---
 
-## 9. SEND/SKIP
+# Tile relevance aggregation
 
-Continuous video:
-
-```python
-emit_policy="every_frame"
-```
-
-Event/request pipeline:
-
-```python
-emit_policy="when_send"
-```
-
-Do not silently apply scheduler frame suppression to a transport that requires continuous cadence.
-
----
-
-# Logical tiles: built-in configuration
-
-## Aggregation
+When a logical tile covers many relevance-map samples, choose how they are combined:
 
 ```python
 aggregation="max"
@@ -529,49 +244,17 @@ aggregation="p90"
 aggregation="mean"
 ```
 
-- `max`: safest for small important regions inside coarse tiles.
-- `p90`: robust high-relevance aggregation.
-- `mean`: more aggressive; small important regions can be diluted.
+- `max` protects small important regions most aggressively.
+- `p90` is a robust high-relevance policy.
+- `mean` is more aggressive and can dilute a small important region inside a large tile.
 
 ---
 
-## Built-in degradation curves
+# Write your own tile degradation function
 
-```python
-curve="linear"
-curve="smoothstep"
-curve="gaussian"
-curve="exponential"
-curve="power"
-```
+You do **not** need to modify FoveaStream.
 
-The curve maps:
-
-```text
-distance 0.0 -> highly relevant
-distance 1.0 -> maximally irrelevant
-```
-
-to raw tile fidelity.
-
-Shape parameter:
-
-```python
-TilePlannerConfig(
-    curve="gaussian",
-    curve_strength=4.5,
-)
-```
-
----
-
-# Custom tile functions
-
-FoveaStream supports several extension levels.
-
-Full guide: [`docs/TILE_POLICIES.md`](docs/TILE_POLICIES.md).
-
-## Level 1: your own distance -> quality function
+## 1. Custom distance → quality
 
 ```python
 def my_degradation(distance: float) -> float:
@@ -587,13 +270,11 @@ planner = TilePlanner(
 )
 ```
 
-`distance` and the returned raw quality are clipped to `[0,1]`. `min_quality` is applied after the callback.
+`distance` is normalized: `0` is closest/highest relevance and `1` is farthest/lowest relevance.
 
----
+## 2. Context-aware quality policy
 
-## Level 2: context-aware quality function
-
-For more advanced policies:
+For full control, use `TilePolicyContext`:
 
 ```python
 from foveastream import TilePolicyContext
@@ -612,7 +293,7 @@ planner = TilePlanner(
 )
 ```
 
-`TilePolicyContext` exposes:
+The context exposes tile geometry and statistics including:
 
 ```text
 index / row / column
@@ -623,11 +304,7 @@ mean_relevance / max_relevance / p90_relevance
 map_width / map_height
 ```
 
-`quality_fn` and `degradation_fn` are mutually exclusive because both own the raw-quality stage.
-
----
-
-## Level 3: custom resolution mapping
+## 3. Custom resolution mapping
 
 ```python
 def stepped_resolution(ctx, quality):
@@ -645,11 +322,9 @@ planner = TilePlanner(
 )
 ```
 
-Useful when the transport/hardware prefers discrete levels.
+Useful for hardware/transports that support discrete resolution levels.
 
----
-
-## Level 4: custom QP mapping
+## 4. Custom QP mapping
 
 ```python
 def tiered_qp(ctx, quality):
@@ -667,9 +342,7 @@ planner = TilePlanner(
 )
 ```
 
----
-
-## Combine advanced hooks
+## Combine custom policies
 
 ```python
 planner = TilePlanner(
@@ -685,43 +358,69 @@ planner = TilePlanner(
 )
 ```
 
-Copyable examples live in:
+Full extension-point documentation: [`docs/TILE_POLICIES.md`](docs/TILE_POLICIES.md).
+
+---
+
+# Benchmark all tile styles on one video
+
+This is the easiest way to understand the API visually:
+
+```powershell
+python bench\benchmark_gallery.py example.mp4 --clean
+```
+
+The standard matrix generates examples for:
+
+### Core actuators
 
 ```text
-examples/custom_tile_policy.py
+multi-ROI relevance
+10 tiles / linear
+25 tiles / smoothstep
+100 tiles / gaussian
+100 tiles / exponential
+400 tiles / gaussian
+encoder delta-QP map
+temporal ROI SEND vs REUSE
+packed ROI atlas
 ```
+
+### Tile counts
+
+```text
+10 / 25 / 100 / 400
+```
+
+### Curves
+
+```text
+linear / smoothstep / gaussian / exponential / power
+```
+
+### Aggregation
+
+```text
+mean / p90 / max
+```
+
+### Built-in custom-policy examples
+
+```text
+gentle distance
+focus cliff
+context-aware quality
+stepped resolution
+tiered QP
+```
+
+The generated GIFs are deliberately tied to **your supplied video**, so documentation/experiments can show the real content rather than a canned synthetic scene.
 
 ---
 
-# Visualize the actual tile resolution loss
+# Benchmark your own policy
 
-`apply_tile_plan(...)` is a reference realization of each tile's `resolution_scale`:
-
-```python
-from foveastream import apply_tile_plan
-
-degraded_rgb = apply_tile_plan(frame_rgb, plan)
-```
-
-It downsamples each tile to its requested spatial scale and upsamples it back into the same-size output rectangle.
-
-This makes the loss visible and works as a generic reference path.
-
-A real tiled transport should normally transmit the low-resolution tile itself rather than upscaling it before sending.
-
-Heat/grid visualization:
-
-```python
-from foveastream import render_tile_plan
-
-heat_rgb = render_tile_plan(frame_rgb, plan)
-```
-
----
-
-# Benchmark your own custom callback without modifying FoveaStream
-
-Given `my_policy.py`:
+Create `my_policy.py`:
 
 ```python
 from foveastream import TilePolicyContext
@@ -731,121 +430,59 @@ def quality(ctx: TilePolicyContext) -> float:
     return max(ctx.p90_relevance, 0.6 * ctx.max_relevance)
 
 
-def scale(ctx: TilePolicyContext, quality: float) -> float:
+def resolution(ctx: TilePolicyContext, quality: float) -> float:
     return 1.0 if quality > 0.7 else 0.25
+
+
+def qp(ctx: TilePolicyContext, quality: float) -> int:
+    return round(18 - 24 * quality)
 ```
 
-Run:
+Then:
 
 ```powershell
 python bench\benchmark_gallery.py example.mp4 `
   --custom-quality my_policy.py:quality `
-  --custom-resolution my_policy.py:scale
+  --custom-resolution my_policy.py:resolution `
+  --custom-qp my_policy.py:qp `
+  --clean
 ```
 
-Supported plugin switches:
-
-```text
---custom-degradation FILE.py:function
---custom-quality FILE.py:function
---custom-resolution FILE.py:function
---custom-qp FILE.py:function
-```
-
-Result:
-
-```text
-output/gallery/example/09_user_policy/user_policy/
-  preview.mp4
-  preview.gif
-  metrics.json
-```
+Your result appears under `09_user_policy/` with preview and metrics.
 
 ---
 
-# Logical tiles vs codec QP blocks
+# Same-size drop-in middleware
 
-These are related but intentionally separate:
-
-```text
-continuous relevance field
-        |
-        +--> logical TilePlan
-        |      exact N tiles: 10 / 25 / 100 / 137 / 400 / ...
-        |      per-tile quality + resolution + QP suggestion
-        |      useful for custom tiled transport or model input
-        |
-        +--> codec QP map
-               fixed block size, e.g. 16x16
-               useful for native encoder ROI/QP APIs
-```
-
-You can use both.
-
-A 100-tile logical plan does not mean the H.264/H.265 encoder has only 100 coding blocks.
-
----
-
-# Effective tile pixel fraction
-
-```python
-plan.effective_pixel_fraction
-```
-
-Formula:
-
-```text
-sum(tile.area_fraction * tile.resolution_scale^2)
-```
-
-Example:
-
-```text
-scale 0.5 -> 0.5 * 0.5 = 25% pixels for that tile
-scale 0.25 -> 6.25% pixels
-scale 0.125 -> 1.56% pixels
-```
-
-This estimates multi-resolution raster cost. It is **not encoded bytes** until a real transport/codec consumes the tile plan.
-
----
-
-# Drop-in middleware
-
-## Existing synchronous loop
-
-Before:
-
-```python
-frame = camera.read()
-downstream.send(frame)
-```
-
-After:
+For a normal camera → encoder/API pipeline:
 
 ```python
 from foveastream import FoveaStreamTransform
 
-optimizer = FoveaStreamTransform(preset="aggressive")
-optimized = optimizer.transform(frame, timestamp_s)
+optimizer = FoveaStreamTransform(
+    preset="aggressive",
+    auto_motion_proposals=True,
+)
+
+optimized = optimizer.transform(frame_rgb, timestamp_s)
 downstream.send(optimized.frame_rgb)
 ```
 
+Default continuous-video behavior is `emit_policy="every_frame"`.
+
+For a request/event pipeline you can explicitly use `emit_policy="when_send"`.
+
 ---
 
-## Callback-driven realtime capture
+# Realtime bridge
+
+If the camera can outrun processing, use the latest-frame bridge instead of building latency with an unbounded FIFO:
 
 ```python
-from foveastream import CallbackFrameSink, FoveaStreamTransform, RealtimeBridge
+from foveastream import FoveaStreamTransform, CallbackFrameSink, RealtimeBridge
 
-optimizer = FoveaStreamTransform(
-    preset="aggressive",
-    emit_policy="every_frame",
-)
-
-sink = CallbackFrameSink(
-    lambda packet: downstream.send(packet.frame_rgb)
-)
+optimizer = FoveaStreamTransform(preset="aggressive", auto_motion_proposals=True)
+sink = CallbackFrameSink(lambda packet: downstream.send(packet.frame_rgb))
 
 bridge = RealtimeBridge(
     optimizer,
@@ -854,713 +491,185 @@ bridge = RealtimeBridge(
     drop_policy="latest",
 )
 
-camera.on_frame(lambda frame, ts: bridge.submit(frame, ts))
+def on_camera_frame(frame, timestamp):
+    bridge.submit(frame, timestamp)
 ```
 
-If capture outruns processing, `latest` discards stale queued work rather than building an unbounded latency queue.
-
-Use `drop_policy="block"` only when every frame must be processed and producer backpressure is acceptable.
+This is intended for realtime vision: if processing falls behind, stale pending frames are replaced by the newest frame instead of accumulating latency.
 
 ---
 
-# Full adaptive runtime
+# Context + ROI / temporal reuse
 
 ```python
-from foveastream import (
-    AdaptiveBudgetConfig,
-    AdaptiveTransportConfig,
-    AdaptiveTransportRuntime,
-    LatencyBudget,
-)
-
-adaptive = AdaptiveTransportRuntime(
-    AdaptiveTransportConfig(
-        preset="aggressive",
-        auto_motion_proposals=True,
-        temporal_cache=True,
-        background_cache=False,
-        build_atlas=True,
-        latency=LatencyBudget(
-            encode_s=0.015,
-            network_s=0.040,
-            consumer_s=0.020,
-            safety_s=0.015,
-        ),
-        budget=AdaptiveBudgetConfig(
-            target_pixel_fraction=0.20,
-        ),
-    )
-)
-
 out = adaptive.process(frame_rgb, timestamp_s)
+
+images = [out.layered.context]
+images += [
+    roi.image
+    for roi in out.layered.changed_rois
+    if roi.image is not None
+]
+
+model.send_images(images)
 ```
 
-Important output surface:
+Temporal cache compares against the **last emitted high-resolution ROI**, not merely frame `N-1`:
+
+```text
+frame 100  ROI A changed -> SEND
+frame 101  ROI A same    -> REUSE
+frame 102  ROI A same    -> REUSE
+frame 103  ROI A changed -> SEND
+```
+
+A forced refresh timeout prevents indefinite stale reuse.
+
+---
+
+# Packed atlas
+
+If a model/API accepts one image but not multiple images:
 
 ```python
-out.frame_rgb
+if out.layered.atlas is not None:
+    model.send_image(out.layered.atlas.image)
+```
 
-out.process_result.rois
-out.process_result.tracks
-out.process_result.quality_map
-out.process_result.qp_map
-out.process_result.decision
+The atlas packs low-resolution scene context and changed high-resolution ROI crops into one image.
 
-out.layered.context
-out.layered.changed_rois
-out.layered.background_updates
-out.layered.atlas
+---
 
+# Encoder delta-QP
+
+For a smart encoder path, preserve the original source frame and consume:
+
+```python
 out.encoder_hints.block_size
 out.encoder_hints.qp_delta_map
 out.encoder_hints.rois
-
-out.payload_pixel_fraction
-out.controller_state
 ```
 
-Build logical tiles from exactly the same quality field:
-
-```python
-plan = planner.plan(out.process_result.quality_map)
-```
-
----
-
-# Public Python API map
-
-The complete signatures/usage are in [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md).
-
-## Spatial primitives
+Conceptually:
 
 ```text
-Falloff
-FoveationConfig
-Roi
-FocusCandidate
-FocusTrackerConfig
-FocusTracker
-quality_map
-foveate
-context_and_roi_views
-qp_delta_map
-depth_focus_map
-pixel_budget
+original NV12/RGB -------------------------+
+                                          |
+FoveaStream relevance -> delta-QP map -----+--> H.264/H.265/AV1 encoder
 ```
 
-## ROI / streaming
-
-```text
-RoiProposal
-RoiTrackerConfig
-RoiTrack
-MultiRoiTracker
-roi_iou
-MotionDetectorConfig
-ClassAgnosticMotionRoiDetector
-SchedulerConfig
-InnovationSignals
-SendDecision
-AdaptiveScheduler
-StreamRuntimeConfig
-ProcessResult
-FoveaStreamRuntime
-StreamSink
-CallbackSink
-run_stream
-```
-
-## Drop-in middleware
-
-```text
-FramePacket
-OptimizedFrame
-FrameTransform
-FrameSink
-CallbackFrameSink
-FoveaStreamTransform
-InlinePipeline
-PipelineStats
-RealtimeBridge
-transform_source
-```
-
-## Adaptive transport
-
-```text
-EvidenceBus
-EvidenceRecord
-RelevanceSnapshot
-relevance_map_to_proposals
-LowResProposalAdapter
-LatencyBudget
-TemporalRoiCacheConfig
-TemporalRoiCache
-RoiEnhancement
-BackgroundTileCacheConfig
-BackgroundTileCache
-BackgroundTileUpdate
-AtlasPlacement
-RoiAtlas
-pack_roi_atlas
-EncoderSpatialHints
-AdaptiveBudgetConfig
-AdaptiveBudgetState
-AdaptiveBudgetController
-LayeredPayload
-AdaptiveTransportConfig
-AdaptiveTransportRuntime
-TransportResult
-```
-
-## Logical tiles
-
-```text
-TileCurve
-TileAggregation
-TilePlannerConfig
-TilePolicyContext
-TileDecision
-TilePlan
-TilePlanner
-TileDegradationFn
-TileQualityFn
-TileResolutionFn
-TileQpFn
-plan_tiles
-rasterize_tile_plan
-apply_tile_plan
-render_tile_plan
-```
-
----
-
-# Presets
-
-| Preset | Peripheral source | Context scale | Max ROIs | Hard ROI area | Peripheral floor |
-|---|---:|---:|---:|---:|---:|
-| `balanced` | 1/8 per axis | 0.25 | 8 | 30% | `0.04 + uncertainty` |
-| `aggressive` | **1/16 per axis** | **0.15** | **6** | **22%** | `0.01 + uncertainty` |
-| `extreme` | 1/24 per axis | 0.10 | 4 | 15% | `0.00 + uncertainty` |
-
-`aggressive` is the recommended general starting point.
-
-`context_scale=0.15` means `0.15 * 0.15 = 2.25%` of full-frame pixels for the global context before high-resolution ROI enhancements are added.
-
----
-
-# Multi-source relevance fusion
-
-```python
-bus = EvidenceBus(fusion="max")
-
-bus.publish(
-    "task",
-    timestamp_s,
-    ttl_s=0.25,
-    weight=2.0,
-    proposals=task_proposals,
-    points=[(0.5, 0.5)],
-    quality_map=optional_dense_map,
-)
-```
-
-Fusion modes:
-
-```text
-max
-noisy_or
-add
-```
-
-Core remains class-agnostic.
-
----
-
-# Low-resolution analysis / full-resolution preservation
-
-```text
-1080p / 4K source
-      |
-      +----> 256 px analysis path ---> relevance
-      |
-      +----> original frame ----------> preservation/output
-```
-
-Use `LowResProposalAdapter` when your proposal generator does not need source resolution.
-
----
-
-# Predictive relevance
-
-Prediction may include:
-
-```text
-ROI velocity
-ROI size change
-staleness
-uncertainty
-capture delay
-analysis delay
-encode delay
-network delay
-decode delay
-consumer/model delay
-safety margin
-```
-
-Use `LatencyBudget` so fidelity protects where a region is expected to matter **downstream**, not only where it was at capture.
+The core provides portable spatial hints. Direct NVENC, MediaCodec, VideoToolbox and VAAPI translation remains adapter/platform work; do not claim those adapters are already implemented.
 
 ---
 
 # Adaptive bitrate / pixel controller
 
 ```python
-budget = AdaptiveBudgetConfig(
+AdaptiveBudgetConfig(
     target_bitrate_bps=2_000_000,
     target_pixel_fraction=0.20,
 )
 ```
 
-Feed actual encoded bytes when a real encoder is connected:
+Feed actual encoder output back:
 
 ```python
-adaptive.feedback_encoded(
-    encoded_bytes=encoded_bytes,
+optimizer.feedback_encoded(
+    encoded_bytes=actual_size,
     duration_s=frame_duration,
 )
 ```
 
-The controller can vary:
+The controller can adapt ROI budget, context resolution, peripheral scale, quality floor, falloff and QP strength instead of relying forever on a fixed preset.
+
+---
+
+# Presets
+
+| Preset | Periphery | Falloff | Quality floor | Max ROI | ROI budget |
+|---|---:|---:|---:|---:|---:|
+| balanced | /8 | 2.8 | 0.04 | 8 | 30% |
+| aggressive | /16 | 4.5 | 0.01 | 6 | 22% |
+| extreme | /24 | 6.5 | 0.00 | 4 | 15% |
+
+These are starting policies, not universal optimal settings.
+
+---
+
+# Real-video codec benchmark
+
+Primary comparison uses the **same decoded frames and same libx264 settings** for baseline and FoveaStream output. That isolates the spatial transform better than comparing against the original source file, whose encoder history may be different.
+
+| Video | Preset | Baseline H.264 | FoveaStream H.264 | H.264 saving | Context + ROI pixel saving |
+|---|---|---:|---:|---:|---:|
+| example1 | balanced | 824,328 B | 293,050 B | 64.45% | 92.26% |
+| example1 | aggressive | 824,328 B | 236,596 B | **71.30%** | **96.26%** |
+| example1 | extreme | 824,328 B | 218,618 B | 73.48% | 97.50% |
+| example2 | balanced | 3,719,593 B | 2,846,879 B | 23.46% | 75.54% |
+| example2 | aggressive | 3,719,593 B | 2,553,743 B | **31.34%** | **84.08%** |
+| example2 | extreme | 3,719,593 B | 2,137,705 B | 42.53% | 89.61% |
+
+Aggressive combined byte saving across both benchmark clips: **38.59%**.
+
+These are benchmark-clip results, not universal compression guarantees. The next meaningful comparison for a downstream vision system is equal task quality/accuracy versus ordinary CRF reduction, global downscale and direct encoder-QP actuation.
+
+Machine-readable benchmark data: [`docs/assets/real_demo/benchmark_presets_2026-09-14.json`](docs/assets/real_demo/benchmark_presets_2026-09-14.json).
+
+---
+
+# Documentation
+
+- [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) — public Python API.
+- [`docs/TILE_POLICIES.md`](docs/TILE_POLICIES.md) — custom tile policies and callbacks.
+- [`docs/BENCHMARK_GALLERY.md`](docs/BENCHMARK_GALLERY.md) — all-modes benchmark gallery.
+- [`docs/ADAPTIVE_TRANSPORT.md`](docs/ADAPTIVE_TRANSPORT.md) — adaptive transport internals.
+- [`docs/FRAME_MIDDLEWARE.md`](docs/FRAME_MIDDLEWARE.md) — source → transform → sink contract.
+- [`docs/AGENT_INTEGRATION.md`](docs/AGENT_INTEGRATION.md) — integration contract for coding agents.
+- [`docs/STATUS.md`](docs/STATUS.md) — exact implementation boundary/current handoff.
+- [`AGENTS.md`](AGENTS.md) — invariants another coding agent must preserve.
+
+---
+
+# Implementation boundary
+
+Implemented today:
 
 ```text
-peripheral scale
-falloff
-ROI budget
-ROI count
-context scale
-quality floor
-uncertainty floor
-peripheral QP
+persistent multi-ROI tracking
+class-agnostic motion proposals
+external relevance evidence
+continuous relevance/quality maps
+same-size RGB actuator
+logical tile planner
+custom degradation/quality/resolution/QP callbacks
+encoder delta-QP hint map
+temporal ROI cache
+background tile cache
+context + ROI layered payload
+packed atlas
+adaptive bitrate/pixel controller
+latest-frame realtime bridge
+Python reference runtime
+Rust core/control-plane primitives
+benchmark + gallery tooling
 ```
 
----
-
-# Realtime behavior
-
-The processing path is causal: frame `N` does not require future frame `N+1`.
-
-Different rates are normal:
+Still platform integration work:
 
 ```text
-camera:      60 FPS
-optimizer:   device/path dependent
-IMU:        200 Hz
-remote VLM:  1-10 requests/s or event-driven
-```
-
-For latency-sensitive callback capture use bounded queues, usually depth 1 with `drop_policy="latest"`.
-
----
-
-# Visual showcase
-
-## Multi-ROI relevance
-
-<p align="center">
-  <img src="docs/assets/showcase/01_multi_roi.gif" width="55%" alt="FoveaStream multi-ROI relevance">
-</p>
-
-## 10 tiles — linear
-
-<p align="center">
-  <img src="docs/assets/showcase/02_tiles_10_linear.gif" width="55%" alt="FoveaStream 10 tile linear degradation">
-</p>
-
-## 25 tiles — smoothstep
-
-<p align="center">
-  <img src="docs/assets/showcase/03_tiles_25_smoothstep.gif" width="55%" alt="FoveaStream 25 tile smoothstep degradation">
-</p>
-
-## 100 tiles — Gaussian
-
-<p align="center">
-  <img src="docs/assets/showcase/04_tiles_100_gaussian.gif" width="55%" alt="FoveaStream 100 tile Gaussian degradation">
-</p>
-
-## 100 tiles — exponential
-
-<p align="center">
-  <img src="docs/assets/showcase/05_tiles_100_exponential.gif" width="55%" alt="FoveaStream 100 tile exponential degradation">
-</p>
-
-## 400 tiles — Gaussian
-
-<p align="center">
-  <img src="docs/assets/showcase/06_tiles_400_gaussian.gif" width="55%" alt="FoveaStream 400 tile Gaussian degradation">
-</p>
-
-## Encoder delta-QP field
-
-<p align="center">
-  <img src="docs/assets/showcase/07_qp_map.gif" width="55%" alt="FoveaStream encoder QP map">
-</p>
-
-## Temporal ROI cache — SEND vs REUSE
-
-<p align="center">
-  <img src="docs/assets/showcase/08_temporal_reuse.gif" width="55%" alt="FoveaStream temporal ROI reuse">
-</p>
-
-## Packed context + changed-ROI atlas
-
-<p align="center">
-  <img src="docs/assets/showcase/09_roi_atlas.gif" width="55%" alt="FoveaStream ROI atlas">
-</p>
-
----
-
-# Existing real-video examples
-
-<p align="center">
-  <img src="docs/assets/real_demo/example1.gif" width="100%" alt="FoveaStream real video demo 1">
-</p>
-
-<p align="center">
-  <img src="docs/assets/real_demo/example2.gif" width="100%" alt="FoveaStream real video demo 2">
-</p>
-
----
-
-# Real-video benchmark
-
-The checked-in benchmark compares the optimized output against a **baseline re-encode of exactly the same decoded frames**.
-
-Both arms:
-
-```text
-encoder:       libx264
-preset:        veryfast
-CRF:           23
-pixel format:  yuv420p
-```
-
-Reference environment:
-
-```text
-CPU:      AMD EPYC 9V74 80-Core Processor
-Python:   3.13.5
-OpenCV:   4.13.0
-NumPy:    2.3.5
-FFmpeg:   7.1.5
-```
-
-## Aggressive preset
-
-| Video | Baseline | FoveaStream | H.264 bytes saved | Context+ROI pixels saved | Processing | Active ROIs |
-|---|---:|---:|---:|---:|---:|---:|
-| `example1.mp4` | 824.3 kB | **236.6 kB** | **71.30%** | **96.26%** | **20.16 ms/frame (~49.6 FPS)** | 1.13 mean / 3 max |
-| `example2.mp4` | 3.720 MB | **2.554 MB** | **31.34%** | **84.08%** | **29.28 ms/frame (~34.2 FPS)** | 3.30 mean / 6 max |
-
-Across both clips:
-
-```text
-same-encoder baseline: 4.544 MB
-aggressive output:     2.790 MB
-byte reduction:        38.59%
-```
-
-Machine-readable source:
-
-[`docs/assets/real_demo/benchmark_presets_2026-09-14.json`](docs/assets/real_demo/benchmark_presets_2026-09-14.json)
-
-## `example1.mp4`
-
-| Preset | H.264 saving | Context+ROI pixel saving |
-|---|---:|---:|
-| balanced | **64.45%** | **92.26%** |
-| aggressive | **71.30%** | **96.26%** |
-| extreme | **73.48%** | **97.50%** |
-
-## `example2.mp4`
-
-| Preset | H.264 saving | Context+ROI pixel saving |
-|---|---:|---:|
-| balanced | **23.46%** | **75.54%** |
-| aggressive | **31.34%** | **84.08%** |
-| extreme | **42.53%** | **89.61%** |
-
-These are reference-video measurements, not universal model-quality or target-device performance claims.
-
----
-
-# Metric meanings
-
-## H.264 bytes saved
-
-Actual encoded bytes from same-decoded-frame baseline and optimized re-encode using identical codec settings.
-
-## Context + ROI pixels
-
-Actual image raster pixels for low-res whole-scene context plus high-res ROI crops.
-
-## Temporal reuse
-
-Fraction of persistent high-res ROI instances that did not need a new emitted crop.
-
-## Layered pixel fraction
-
-`context + changed ROI + optional background update` pixels divided by full-frame pixels.
-
-## Logical tile effective pixels
-
-```text
-sum(tile_area_fraction * resolution_scale^2)
-```
-
-Estimated raster cost of a real multi-resolution tile representation. Not encoded bytes.
-
-## QP statistics
-
-Spatial policy statistics until a real encoder consumes the map.
-
----
-
-# Native Rust
-
-The repository also contains a native runtime/control plane and native logical tile planner.
-
-```rust
-use foveastream::{
-    EmitPolicy,
-    FrameInput,
-    InnovationSignals,
-    StreamMiddleware,
-    TilePlannerConfig,
-    plan_tiles,
-};
-
-let mut optimizer = StreamMiddleware::aggressive();
-optimizer.set_emit_policy(EmitPolicy::EveryFrame);
-
-let output = optimizer.process_rgb8(
-    FrameInput {
-        rgb8: frame,
-        width,
-        height,
-        timestamp_s,
-    },
-    &proposals,
-    &points,
-    InnovationSignals::default(),
-)?;
-
-if let Some(result) = output {
-    let tiles = plan_tiles(
-        &result.quality_map,
-        width,
-        height,
-        &TilePlannerConfig::default(),
-    );
-
-    downstream.send(&result.foveated_rgb8)?;
-}
-```
-
-Python/OpenCV remains the reference integration/visualization/benchmark layer.
-
----
-
-# Installation
-
-## Windows
-
-```powershell
-git clone https://github.com/SirPaul-code/foveated_streaming_lib.git
-cd foveated_streaming_lib
-.\scripts\setup.ps1
-.\.venv\Scripts\Activate.ps1
-```
-
-Manual:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-```
-
-Development dependencies:
-
-```powershell
-python -m pip install -r requirements-dev.txt
-```
-
-## Linux / macOS
-
-```bash
-git clone https://github.com/SirPaul-code/foveated_streaming_lib.git
-cd foveated_streaming_lib
-chmod +x scripts/setup.sh
-./scripts/setup.sh
-source .venv/bin/activate
-```
-
-FFmpeg with `libx264` is required for MP4 benchmarks/gallery generation. Core middleware itself does not require FFmpeg.
-
----
-
-# Validation
-
-```powershell
-pytest -q
-cargo test --all-targets
-cargo build --release
-```
-
-CLI smoke tests:
-
-```powershell
-python examples\adaptive_transport.py --help
-python examples\generate_showcase.py --help
-python bench\benchmark_suite.py --help
-python bench\benchmark_gallery.py --help
-```
-
-CI covers Python plus Rust tests/release builds on Ubuntu, Windows and macOS.
-
----
-
-# Current implementation status
-
-## Implemented
-
-- causal frame-by-frame runtime;
-- source/transform/sink middleware;
-- bounded latest-frame realtime bridge;
-- same-size foveated RGB;
-- class-agnostic residual-motion proposal source;
-- arbitrary external relevance evidence;
-- multi-source TTL relevance fusion;
-- persistent predictive multi-ROI tracking;
-- hard total ROI-area budget;
-- latency-aware future relevance;
-- low-resolution analysis/full-resolution preservation pattern;
-- context + multiple high-resolution ROI views;
-- temporal high-resolution ROI reuse;
-- optional static-background tile cache;
-- layered base + changed-ROI payload;
-- packed one-image atlas;
-- exact-count logical tile planner;
-- built-in tile degradation curves;
-- distance-only custom degradation callback;
-- context-aware custom quality callback;
-- custom resolution callback;
-- custom QP callback;
-- reference `apply_tile_plan(...)` realization;
-- tile heat/grid visualization;
-- portable encoder delta-QP block map;
-- adaptive bitrate/pixel controller;
-- SEND/SKIP recommendation;
-- Python reference API;
-- native Rust runtime/control plane + tile planner;
-- codec benchmark;
-- adaptive transport benchmark;
-- combined benchmark suite;
-- all-modes benchmark gallery;
-- reproducible documentation showcase.
-
-## Still platform/adapter work
-
-- full native NV12/YUV hot path;
-- zero-copy AHardwareBuffer / CVPixelBuffer / DMA-BUF;
-- CameraX/Camera2 direct adapter;
-- AVFoundation direct adapter;
-- OpenXR/Meta direct camera adapter;
-- direct MediaCodec ROI/QP adapter;
-- direct NVENC ROI/QP adapter;
-- direct VideoToolbox/VAAPI adapter;
-- concrete WebRTC/RTP/GStreamer layered/tile packetization;
-- world-locked moving-camera background cache;
-- stateful C ABI for the complete high-level adaptive runtime;
-- target-device p50/p95/energy matrix;
-- broad downstream task-quality validation.
-
-A logical `TilePlan` is policy metadata until a downstream adapter really transmits/encodes tiles at the requested scale/quality.
-
-A portable QP map is policy metadata until a real encoder consumes it.
-
----
-
-# Repository layout
-
-```text
-src/
-  middleware.rs
-  streaming.rs
-  transport.rs
-  tiles.rs
-  roi.rs
-  predictive.rs
-  scheduler.rs
-
-python/foveastream/
-  middleware.py
-  streaming.py
-  optimization.py
-  tiles.py
-
-examples/
-  live_webcam.py
-  custom_sink_adapter.py
-  adaptive_transport.py
-  generate_showcase.py
-  custom_tile_policy.py
-
-bench/
-  real_video_visualization.py
-  benchmark_transport_stack.py
-  benchmark_suite.py
-  benchmark_gallery.py
-
-docs/
-  API_REFERENCE.md
-  TILE_POLICIES.md
-  BENCHMARK_GALLERY.md
-  ADAPTIVE_TRANSPORT.md
-  FRAME_MIDDLEWARE.md
-  AGENT_INTEGRATION.md
-  REALTIME_STREAMING_STATUS.md
-  PREDICTIVE_ATTENTION_ARCHITECTURE.md
-  STATUS.md
-
-AGENTS.md
+direct CameraX / AVFoundation / OpenXR capture adapters
+native NV12/YUV zero-copy hot path
+direct NVENC / MediaCodec / VideoToolbox / VAAPI QP wiring
+production WebRTC / RTP / GStreamer adapters
+world-locked background cache for freely moving cameras
 ```
 
 ---
 
-# For coding agents
+# License
 
-Read:
+The repository is available for evaluation and non-commercial research/development under [`LICENSE`](LICENSE).
 
-1. [`AGENTS.md`](AGENTS.md)
-2. [`README.md`](README.md)
-3. [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md)
-4. [`docs/TILE_POLICIES.md`](docs/TILE_POLICIES.md)
-5. [`docs/BENCHMARK_GALLERY.md`](docs/BENCHMARK_GALLERY.md)
-6. [`docs/STATUS.md`](docs/STATUS.md)
+Commercial production, OEM, SaaS, resale, paid SDK integration or other commercial use requires a separate written commercial license.
 
-Repository documentation is the durable handoff. Do not depend on chat history.
-
----
-
-# License / commercial use
-
-The repository is available for evaluation and permitted non-commercial use under [`LICENSE`](LICENSE).
-
-For **commercial use, OEM integration, redistribution or commercial licensing**, contact:
-
-**p.duplinsky@gmail.com**
-
-The runtime does not require a licensing server, telemetry or paywall.
+**Commercial licensing:** `p.duplinsky@gmail.com`
