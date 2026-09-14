@@ -1,0 +1,20 @@
+[package]
+name = "foveastream-core"
+version = "0.1.0"
+edition = "2021"
+description = "Transport-agnostic foveated preprocessing for vision models and video encoders"
+license = "LicenseRef-Proprietary"
+repository = "https://github.com/SirPaul-code/foveated_streaming_lib"
+
+[lib]
+name = "foveastream"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[features]
+default = []
