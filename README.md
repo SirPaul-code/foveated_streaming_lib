@@ -8,13 +8,13 @@ It is designed to sit between **any camera/sensor stack** and **any vision trans
 
 ## Real video visualization
 
-The animation below was generated from the two uploaded source videos using the actual automatic tracking/foveation pipeline. The attention region is **not manually drawn**.
+The animation below is a literal **BEFORE → AFTER** view of what the model-input path can look like. The left side is the full source frame. The right side is the optimized VLM payload: a **25%-scale global context plus a full-detail ROI** selected by the automatic tracker. Both uploaded videos are included; the ROI is not manually drawn.
 
-![FoveaStream real video visualization](docs/assets/real_demo/foveastream_readme.gif)
+![FoveaStream before vs optimized LLM payload](docs/assets/real_demo/foveastream_llm_before_after_readme.gif)
 
-`ORIGINAL` → automatic predicted attention field → `FOVEATED TRANSPORT`
+`BEFORE: FULL FRAME` → automatic predicted attention → `AFTER: GLOBAL CONTEXT + HI-RES ROI`
 
-The current visualizer estimates global camera motion, isolates residual scene motion, temporally propagates the attention state, builds a continuous quality field and applies spatially varying fidelity. Production device adapters can replace the final RGB transform with hardware QP/ROI maps or model-specific ROI/patch output.
+This preview is specifically the **model-input optimization path**, not just a visual blur effect. The tracker estimates global camera motion, isolates residual scene motion, temporally propagates the attention state and selects the high-detail region that is preserved for the downstream model.
 
 ## Measured results on the two uploaded videos
 
