@@ -33,7 +33,7 @@ def run(seconds=8.0, local_fps=60, semantic_fps=1, seed=7, flow_noise=.0025, sem
     rng=np.random.default_rng(seed); dt=1/local_fps; n=int(seconds*local_fps)
     f=PredictiveAttentionFilter(PredictionConfig(confidence_decay_per_s=.08,max_horizon_s=1.5))
     semantic_period=max(1,round(local_fps/semantic_fps)); last_true=target(0)
-    covered_pred=covered_naive=0; area_pred=area_naive=0.; naive_center=np.array([.5,.5]); trace=[]
+    covered_pred=covered_naive=0; area_pred=area_naive=0.; naive_center=np.array([.5,.5]); trace=[]; naive_errors=[]
 
     for i in range(n):
         t=i*dt; true=target(t)
@@ -44,7 +44,7 @@ def run(seconds=8.0, local_fps=60, semantic_fps=1, seed=7, flow_noise=.0025, sem
         else:
             f.predict_to(t)
 
-        # stand-in for a robust residual optical-flow observation available on local frames
+        # Stand-in for robust residual optical flow / local track displacement at camera rate.
         delta=true-last_true
         obs=delta+rng.normal(0,flow_noise,2)
         f.apply_flow(float(obs[0]),float(obs[1]),dt,confidence=.72)
@@ -55,15 +55,29 @@ def run(seconds=8.0, local_fps=60, semantic_fps=1, seed=7, flow_noise=.0025, sem
         naive_hit=rect_contains(naive_center[0],naive_center[1],base_roi,base_roi,true)
         covered_pred+=pred_hit; covered_naive+=naive_hit
         area_pred+=roi.w*roi.h; area_naive+=base_roi*base_roi
+        naive_errors.append(float(np.max(np.abs(true-naive_center))))
         if i%(local_fps//10 or 1)==0:
             trace.append({'t':round(t,3),'target':true.tolist(),'predictive_center':pc.tolist(),'roi':[roi.x,roi.y,roi.w,roi.h],'naive_center':naive_center.tolist()})
         last_true=true
 
+    predictive_coverage=covered_pred/n
+    # What square ROI would stale 1 Hz reacquisition require to match predictive coverage?
+    q=min(max(predictive_coverage,0.0),1.0)
+    required_half=float(np.quantile(np.asarray(naive_errors),q if q<1 else 1.0))
+    required_side=min(1.0,2*required_half)
+    matched_naive_area=required_side*required_side
+    predictive_area=area_pred/n
+
     return {
         'settings':{'seconds':seconds,'local_fps':local_fps,'semantic_fps':semantic_fps,'flow_noise':flow_noise,'semantic_noise':semantic_noise,'base_roi':base_roi},
-        'predictive':{'coverage':covered_pred/n,'mean_frame_area_fraction':area_pred/n},
-        'naive_1hz':{'coverage':covered_naive/n,'mean_frame_area_fraction':area_naive/n},
-        'relative':{'coverage_gain_points':100*(covered_pred-covered_naive)/n,'area_ratio_predictive_to_naive':area_pred/max(area_naive,1e-12)},
+        'predictive':{'coverage':predictive_coverage,'mean_frame_area_fraction':predictive_area},
+        'naive_1hz_fixed_roi':{'coverage':covered_naive/n,'mean_frame_area_fraction':area_naive/n},
+        'naive_1hz_area_to_match_predictive_coverage':matched_naive_area,
+        'relative':{
+            'coverage_gain_points_vs_same_base_roi':100*(covered_pred-covered_naive)/n,
+            'area_ratio_predictive_vs_naive_equal_coverage':predictive_area/max(matched_naive_area,1e-12),
+            'area_saving_vs_naive_equal_coverage_pct':100*(1-predictive_area/max(matched_naive_area,1e-12)),
+        },
         'trace_10hz':trace,
     }
 
