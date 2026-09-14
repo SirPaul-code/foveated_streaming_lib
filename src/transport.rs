@@ -330,7 +330,7 @@ mod tests {
         let mut bus = EvidenceBus::default();
         bus.publish(EvidenceRecord {
             source_id: 7, timestamp_s: 1.0, ttl_s: 0.5, weight: 2.0,
-            proposals: vec![RoiProposal::new(RoiRect { x: .1, y: .1, w: .2, h: .2, confidence: 1.0 }, 1.0)],
+            proposals: vec![RoiProposal::new(RoiRect { x: 0.1, y: 0.1, w: 0.2, h: 0.2, confidence: 1.0 }, 1.0)],
         });
         let active = bus.proposals_at(1.1);
         assert_eq!(active.len(), 1);
@@ -341,11 +341,11 @@ mod tests {
 
     #[test]
     fn temporal_cache_skips_unchanged_signature() {
-        let mut cache = TemporalRegionCache::new(TemporalCacheConfig { change_threshold: .02, max_refresh_s: 10.0 });
-        let sig = RegionSignature { mean_rgb: [.1, .2, .3], samples: [.2; 16] };
+        let mut cache = TemporalRegionCache::new(TemporalCacheConfig { change_threshold: 0.02, max_refresh_s: 10.0 });
+        let sig = RegionSignature { mean_rgb: [0.1, 0.2, 0.3], samples: [0.2; 16] };
         assert!(cache.observe(1, sig, 0.0).changed);
         assert!(!cache.observe(1, sig, 0.1).changed);
-        let changed = RegionSignature { mean_rgb: [.9, .2, .3], samples: [.8; 16] };
+        let changed = RegionSignature { mean_rgb: [0.9, 0.2, 0.3], samples: [0.8; 16] };
         assert!(cache.observe(1, changed, 0.2).changed);
     }
 
@@ -357,7 +357,7 @@ mod tests {
         let roi = RoiRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0, confidence: 1.0 };
         let sa = signature_rgb8(&a, 16, 16, roi);
         let sb = signature_rgb8(&b, 16, 16, roi);
-        assert!(sa.difference(&sb) > .5);
+        assert!(sa.difference(&sb) > 0.5);
         a[0] = 1;
     }
 
