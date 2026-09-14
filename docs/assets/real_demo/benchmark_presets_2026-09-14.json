@@ -1,0 +1,178 @@
+{
+  "date": "2026-09-14",
+  "protocol": {
+    "process_fps_target": 30,
+    "encoder": "libx264",
+    "encoder_preset": "veryfast",
+    "crf": 23,
+    "pixel_format": "yuv420p",
+    "comparison": "foveated re-encode versus baseline re-encode at identical codec settings",
+    "note": "Source-vs-foveated bytes are reported separately because source files were encoded with different settings and are not the primary apples-to-apples codec metric. Timing is environment-specific."
+  },
+  "environment": {
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "python": "3.13.5",
+    "opencv": "4.13.0",
+    "numpy": "2.3.5",
+    "ffmpeg": "7.1.5-0+deb13u1"
+  },
+  "inputs": [
+    {
+      "name": "example1.mp4",
+      "sha256": "d0cdebfd71a7cd79d3d072c137596c607c34f4aba648d8e593440c07cd8b1ac5",
+      "source_bytes": 1237015,
+      "encoded_width": 1024,
+      "encoded_height": 576,
+      "rotation_degrees": -90,
+      "decoded_display_width": 576,
+      "decoded_display_height": 1024,
+      "source_fps_observed": 59.53022403727885,
+      "duration_s": 5.994583
+    },
+    {
+      "name": "example2.mp4",
+      "sha256": "f6a1c3810d40638d36604290d33537aba81bb69298f52a16f83ce76156739cb6",
+      "source_bytes": 3121697,
+      "encoded_width": 1024,
+      "encoded_height": 576,
+      "rotation_degrees": -90,
+      "decoded_display_width": 576,
+      "decoded_display_height": 1024,
+      "source_fps_observed": 59.276012476544345,
+      "duration_s": 11.623589
+    }
+  ],
+  "presets": {
+    "balanced": {
+      "peripheral_downscale": 8,
+      "falloff_strength": 2.8,
+      "quality_floor": 0.04,
+      "uncertainty_floor": 0.08,
+      "context_scale": 0.25,
+      "max_rois": 8,
+      "roi_budget_fraction": 0.30
+    },
+    "aggressive": {
+      "peripheral_downscale": 16,
+      "falloff_strength": 4.5,
+      "quality_floor": 0.01,
+      "uncertainty_floor": 0.02,
+      "context_scale": 0.15,
+      "max_rois": 6,
+      "roi_budget_fraction": 0.22
+    },
+    "extreme": {
+      "peripheral_downscale": 24,
+      "falloff_strength": 6.5,
+      "quality_floor": 0.0,
+      "uncertainty_floor": 0.01,
+      "context_scale": 0.10,
+      "max_rois": 4,
+      "roi_budget_fraction": 0.15
+    }
+  },
+  "results": [
+    {
+      "video": "example1.mp4",
+      "preset": "balanced",
+      "benchmark_fps": 29.765112018639424,
+      "frames": 178,
+      "baseline_reencode_bytes": 824328,
+      "foveated_reencode_bytes": 293050,
+      "h264_byte_saving_pct": 64.44983064993546,
+      "source_vs_foveated_saving_pct": 76.30990731721118,
+      "context_plus_roi_pixel_saving_pct": 92.25753898477733,
+      "processing_ms_per_frame": 20.42532226966267,
+      "processing_throughput_fps": 48.95883584100312,
+      "mean_active_roi_count": 1.1292134831460674,
+      "max_active_roi_count": 3,
+      "mean_active_roi_area_fraction": 0.01491518504705626,
+      "max_active_roi_area_fraction": 0.062474277136225
+    },
+    {
+      "video": "example1.mp4",
+      "preset": "aggressive",
+      "benchmark_fps": 29.765112018639424,
+      "frames": 178,
+      "baseline_reencode_bytes": 824328,
+      "foveated_reencode_bytes": 236596,
+      "h264_byte_saving_pct": 71.29831814520433,
+      "source_vs_foveated_saving_pct": 80.87363532374304,
+      "context_plus_roi_pixel_saving_pct": 96.26212340318011,
+      "processing_ms_per_frame": 20.164263662920234,
+      "processing_throughput_fps": 49.592686185654536,
+      "mean_active_roi_count": 1.1292134831460674,
+      "max_active_roi_count": 3,
+      "mean_active_roi_area_fraction": 0.01491518504705626,
+      "max_active_roi_area_fraction": 0.062474277136225
+    },
+    {
+      "video": "example1.mp4",
+      "preset": "extreme",
+      "benchmark_fps": 29.765112018639424,
+      "frames": 178,
+      "baseline_reencode_bytes": 824328,
+      "foveated_reencode_bytes": 218618,
+      "h264_byte_saving_pct": 73.47924612532874,
+      "source_vs_foveated_saving_pct": 82.32697259127819,
+      "context_plus_roi_pixel_saving_pct": 97.504527917069,
+      "processing_ms_per_frame": 21.78365212359659,
+      "processing_throughput_fps": 45.90598464968945,
+      "mean_active_roi_count": 1.1292134831460674,
+      "max_active_roi_count": 3,
+      "mean_active_roi_area_fraction": 0.01491518504705626,
+      "max_active_roi_area_fraction": 0.062474277136225
+    },
+    {
+      "video": "example2.mp4",
+      "preset": "balanced",
+      "benchmark_fps": 29.638006238272173,
+      "frames": 345,
+      "baseline_reencode_bytes": 3719593,
+      "foveated_reencode_bytes": 2846879,
+      "h264_byte_saving_pct": 23.462620775982746,
+      "source_vs_foveated_saving_pct": 8.803480927200813,
+      "context_plus_roi_pixel_saving_pct": 75.541736645783,
+      "processing_ms_per_frame": 29.81949338840566,
+      "processing_throughput_fps": 33.53511030434935,
+      "mean_active_roi_count": 3.8347826086956522,
+      "max_active_roi_count": 8,
+      "mean_active_roi_area_fraction": 0.18187784479928112,
+      "max_active_roi_area_fraction": 0.3000000000000001
+    },
+    {
+      "video": "example2.mp4",
+      "preset": "aggressive",
+      "benchmark_fps": 29.638006238272173,
+      "frames": 345,
+      "baseline_reencode_bytes": 3719593,
+      "foveated_reencode_bytes": 2553743,
+      "h264_byte_saving_pct": 31.343483010103522,
+      "source_vs_foveated_saving_pct": 18.19375807453446,
+      "context_plus_roi_pixel_saving_pct": 84.07660737705692,
+      "processing_ms_per_frame": 29.27721086086901,
+      "processing_throughput_fps": 34.15625910378533,
+      "mean_active_roi_count": 3.3043478260869565,
+      "max_active_roi_count": 6,
+      "mean_active_roi_area_fraction": 0.13660610866445447,
+      "max_active_roi_area_fraction": 0.22000000000000014
+    },
+    {
+      "video": "example2.mp4",
+      "preset": "extreme",
+      "benchmark_fps": 29.638006238272173,
+      "frames": 345,
+      "baseline_reencode_bytes": 3719593,
+      "foveated_reencode_bytes": 2137705,
+      "h264_byte_saving_pct": 42.528523954099285,
+      "source_vs_foveated_saving_pct": 31.52106050010619,
+      "context_plus_roi_pixel_saving_pct": 89.60949097662541,
+      "processing_ms_per_frame": 27.806638365218053,
+      "processing_throughput_fps": 35.96263549968882,
+      "mean_active_roi_count": 2.6057971014492756,
+      "max_active_roi_count": 4,
+      "mean_active_roi_area_fraction": 0.09375590521332623,
+      "max_active_roi_area_fraction": 0.15000000000000008
+    }
+  ]
+}
