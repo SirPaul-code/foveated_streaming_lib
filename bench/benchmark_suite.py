@@ -3,7 +3,7 @@
 
 Runs both:
 1. codec benchmark / visualization (baseline vs same-encoder foveated H.264), and
-2. adaptive transport benchmark (latency, temporal reuse, layered pixels, atlas, QP hints).
+2. adaptive transport benchmark (latency, temporal reuse, layered pixels, atlas, QP hints, tiles).
 
 Each input gets its own output directory and a combined machine-readable JSON report.
 """
@@ -47,8 +47,7 @@ def benchmark_video(path: Path, args) -> dict:
     ]
     run(codec_cmd)
 
-    # real_video_visualization historically calls a single input "example1".
-    # Normalize filenames here so arbitrary inputs keep their own name.
+    # The lower-level codec tool names a single input example1; normalize arbitrary source names here.
     for item in list(codec_out.glob("example1_*")):
         item.rename(codec_out / item.name.replace("example1_", f"{stem}_", 1))
     codec_json = codec_out / f"{stem}_benchmark.json"
@@ -65,6 +64,12 @@ def benchmark_video(path: Path, args) -> dict:
         "--network-ms", str(args.network_ms),
         "--consumer-ms", str(args.consumer_ms),
         "--safety-ms", str(args.safety_ms),
+        "--tiles", str(args.tiles),
+        "--tile-curve", args.tile_curve,
+        "--tile-strength", str(args.tile_strength),
+        "--tile-aggregation", args.tile_aggregation,
+        "--tile-min-quality", str(args.tile_min_quality),
+        "--tile-min-scale", str(args.tile_min_scale),
     ]
     if args.background_cache:
         transport_cmd.append("--background-cache")
@@ -77,7 +82,7 @@ def benchmark_video(path: Path, args) -> dict:
     transport = transport_report["results"][0]
 
     combined = {
-        "schema": "foveastream.benchmark-suite.v1",
+        "schema": "foveastream.benchmark-suite.v2",
         "video": str(path),
         "preset": args.preset,
         "codec": codec,
@@ -93,6 +98,7 @@ def benchmark_video(path: Path, args) -> dict:
     combined_path = root_out / f"{stem}_benchmark_suite.json"
     combined_path.write_text(json.dumps(combined, indent=2), encoding="utf-8")
 
+    tiles = transport.get("logical_tiles", {})
     print("\n=== FoveaStream benchmark summary ===")
     print(f"video:                  {path}")
     print(f"preset:                 {args.preset}")
@@ -103,6 +109,9 @@ def benchmark_video(path: Path, args) -> dict:
     print(f"transport p95:          {transport['processing_ms']['p95']:.2f} ms/frame")
     print(f"temporal ROI reuse:     {transport['roi']['temporal_reuse_fraction']*100:.2f}%")
     print(f"layered pixels:         {transport['layered_payload']['mean_pixel_fraction']*100:.2f}% of full frame")
+    if tiles.get("enabled"):
+        print(f"logical tiles:          {tiles['target_tiles']} / {tiles['curve']}")
+        print(f"tile effective pixels:  {tiles['mean_effective_pixel_fraction']*100:.2f}% of full frame")
     print(f"combined report:        {combined_path}")
     return combined
 
@@ -121,6 +130,12 @@ def main() -> None:
     p.add_argument("--network-ms", type=float, default=40.0)
     p.add_argument("--consumer-ms", type=float, default=20.0)
     p.add_argument("--safety-ms", type=float, default=15.0)
+    p.add_argument("--tiles", type=int, default=100)
+    p.add_argument("--tile-curve", choices=("linear", "smoothstep", "gaussian", "exponential", "power"), default="gaussian")
+    p.add_argument("--tile-strength", type=float, default=3.0)
+    p.add_argument("--tile-aggregation", choices=("mean", "max", "p90"), default="max")
+    p.add_argument("--tile-min-quality", type=float, default=0.04)
+    p.add_argument("--tile-min-scale", type=float, default=0.125)
     args = p.parse_args()
 
     for video in args.videos:
