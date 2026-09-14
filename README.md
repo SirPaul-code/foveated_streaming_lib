@@ -10,7 +10,14 @@ It is designed to sit between **any camera/sensor stack** and **any vision trans
 
 The animation below is a literal **BEFORE → AFTER** view of what the model-input path can look like. The left side is the full source frame. The right side is the optimized VLM payload: a **25%-scale global context plus a full-detail ROI** selected by the automatic tracker. Both uploaded videos are included; the ROI is not manually drawn.
 
-![FoveaStream before vs optimized LLM payload](docs/assets/real_demo/foveastream_llm_before_after_readme.gif)
+<p align="center">
+  <img src="docs/assets/real_demo/example1.gif" width="100%" alt="Foveated streaming demo 1">
+</p>
+
+<p align="center">
+  <img src="docs/assets/real_demo/example2.gif" width="100%" alt="Foveated streaming demo 2">
+</p>
+ 
 
 `BEFORE: FULL FRAME` → automatic predicted attention → `AFTER: GLOBAL CONTEXT + HI-RES ROI`
 
@@ -24,6 +31,8 @@ Both source videos were ~60 FPS H.264. For this reproducible CPU benchmark the p
 |---|---:|---:|---:|
 | `example1.mp4` | **58.44%** | **91.80%** | **16.14 ms** |
 | `example2.mp4` | **40.44%** | **87.62%** | **15.88 ms** |
+
+
 
 Raw benchmark output: [`docs/assets/real_demo/benchmark_summary.json`](docs/assets/real_demo/benchmark_summary.json)
 
