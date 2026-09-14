@@ -339,6 +339,39 @@ def rasterize_tile_plan(plan: TilePlan, width: int, height: int, *, field: str =
     return out
 
 
+def apply_tile_plan(frame_rgb: np.ndarray, plan: TilePlan) -> np.ndarray:
+    """Reference realization of ``resolution_scale`` for visual testing and generic pipelines.
+
+    Every logical tile is downsampled to its suggested resolution and resized back into its original
+    rectangle. The output keeps the original frame dimensions, making the spatial loss directly
+    visible. Production tiled transports should normally send the low-resolution tile itself rather
+    than upscaling it again; this function is a CPU/reference preview, not a zero-copy hot path.
+    """
+    if cv2 is None:
+        raise RuntimeError("apply_tile_plan requires opencv-python")
+    frame = np.ascontiguousarray(frame_rgb, np.uint8)
+    h, w = frame.shape[:2]
+    out = frame.copy()
+    for tile in plan.tiles:
+        x0 = int(round(tile.x * w)); x1 = int(round((tile.x + tile.w) * w))
+        y0 = int(round(tile.y * h)); y1 = int(round((tile.y + tile.h) * h))
+        x0, x1 = max(0, x0), min(w, x1)
+        y0, y1 = max(0, y0), min(h, y1)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        crop = frame[y0:y1, x0:x1]
+        ch, cw = crop.shape[:2]
+        scale = float(np.clip(tile.resolution_scale, 1.0 / max(cw, ch, 1), 1.0))
+        low_w = max(1, int(round(cw * scale)))
+        low_h = max(1, int(round(ch * scale)))
+        if low_w == cw and low_h == ch:
+            out[y0:y1, x0:x1] = crop
+            continue
+        low = cv2.resize(crop, (low_w, low_h), interpolation=cv2.INTER_AREA)
+        out[y0:y1, x0:x1] = cv2.resize(low, (cw, ch), interpolation=cv2.INTER_LINEAR)
+    return out
+
+
 def render_tile_plan(
     frame_rgb: np.ndarray,
     plan: TilePlan,
