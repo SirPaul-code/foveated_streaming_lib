@@ -38,3 +38,29 @@ jobs:
           python examples/generate_showcase.py --help
           python bench/benchmark_suite.py --help
           python bench/benchmark_gallery.py --help
+      - name: benchmark gallery runtime smoke
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from examples.generate_showcase import ffmpeg_path, synthetic_source
+          synthetic_source(
+              ffmpeg_path(),
+              Path('/tmp/foveastream-ci.mp4'),
+              seconds=0.75,
+              fps=12.0,
+              width=160,
+              height=90,
+          )
+          PY
+          python bench/benchmark_gallery.py /tmp/foveastream-ci.mp4 \
+            --skip-preset-benchmarks \
+            --skip-showcase \
+            --no-gif \
+            --gallery-fps 6 \
+            --gallery-seconds 0.5 \
+            --gallery-width 320 \
+            --outdir /tmp/foveastream-gallery \
+            --clean
+          test -f /tmp/foveastream-gallery/foveastream-ci/INDEX.md
+          test -f /tmp/foveastream-gallery/foveastream-ci/report.json
+          test -f /tmp/foveastream-gallery/foveastream-ci/tile_policies.csv
