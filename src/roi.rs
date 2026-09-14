@@ -156,11 +156,17 @@ impl MultiRoiTracker {
         let mut area = 0.0f32;
         let mut out = Vec::new();
         for track in ranked.into_iter().take(self.cfg.max_tracks.max(1)) {
-            let r = self.expanded_predicted_roi(track);
+            let mut r = self.expanded_predicted_roi(track);
+            if budget > 0.0 {
+                let remaining = (budget - area).max(0.0);
+                if remaining <= 1.0e-9 { break; }
+                r = fit_roi_to_area(r, remaining);
+            }
             let next_area = (r.w * r.h).clamp(0.0, 1.0);
-            if !out.is_empty() && budget > 0.0 && area + next_area > budget { continue; }
+            if next_area <= 0.0 { continue; }
             area += next_area;
             out.push(r);
+            if budget > 0.0 && area >= budget - 1.0e-6 { break; }
         }
         out
     }
@@ -228,6 +234,24 @@ impl MultiRoiTracker {
     }
 }
 
+fn fit_roi_to_area(roi: RoiRect, max_area: f32) -> RoiRect {
+    let r = roi.normalized();
+    let area = (r.w * r.h).max(0.0);
+    if max_area <= 0.0 || area <= max_area { return r; }
+    let scale = (max_area / area.max(1.0e-12)).sqrt().clamp(0.0, 1.0);
+    let nw = r.w * scale;
+    let nh = r.h * scale;
+    let cx = r.x + r.w * 0.5;
+    let cy = r.y + r.h * 0.5;
+    RoiRect {
+        x: cx - nw * 0.5,
+        y: cy - nh * 0.5,
+        w: nw,
+        h: nh,
+        confidence: r.confidence,
+    }.normalized()
+}
+
 pub fn iou(a: RoiRect, b: RoiRect) -> f32 {
     let a = a.normalized(); let b = b.normalized();
     let x0 = a.x.max(b.x); let y0 = a.y.max(b.y);
@@ -291,5 +315,17 @@ mod tests {
         let mut t = MultiRoiTracker::new(RoiTrackerConfig::default());
         let out = t.update(1.0 / 30.0, &[proposal(0.1, 0.2), b]);
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn hard_pixel_budget_clamps_oversized_first_roi() {
+        let cfg = RoiTrackerConfig { pixel_budget_fraction: 0.10, ..RoiTrackerConfig::default() };
+        let mut t = MultiRoiTracker::new(cfg);
+        let p = RoiProposal::new(RoiRect { x: 0.05, y: 0.05, w: 0.90, h: 0.90, confidence: 1.0 }, 1.0);
+        let out = t.update(1.0 / 30.0, &[p]);
+        assert_eq!(out.len(), 1);
+        let area = out[0].w * out[0].h;
+        assert!(area <= 0.10001, "area {area} exceeded budget");
+        assert!(area > 0.09);
     }
 }
