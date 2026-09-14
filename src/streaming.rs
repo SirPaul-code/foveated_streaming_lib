@@ -248,8 +248,8 @@ mod tests {
         let mut rt = StreamRuntime::new(StreamRuntimeConfig::aggressive());
         let frame = vec![127u8; 64 * 48 * 3];
         let proposals = [
-            RoiProposal::new(RoiRect { x: .1, y: .1, w: .15, h: .2, confidence: 1.0 }, 1.0),
-            RoiProposal::new(RoiRect { x: .65, y: .55, w: .15, h: .2, confidence: 1.0 }, 1.0),
+            RoiProposal::new(RoiRect { x: 0.1, y: 0.1, w: 0.15, h: 0.2, confidence: 1.0 }, 1.0),
+            RoiProposal::new(RoiRect { x: 0.65, y: 0.55, w: 0.15, h: 0.2, confidence: 1.0 }, 1.0),
         ];
         let out = rt.process_rgb8(
             FrameInput { rgb8: &frame, width: 64, height: 48, timestamp_s: 0.0 },
