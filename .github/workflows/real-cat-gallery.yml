@@ -1,0 +1,68 @@
+name: real-cat-usage-gallery
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ docs/real-cat-usage-gallery ]
+    paths:
+      - '.github/workflows/real-cat-gallery.yml'
+      - 'README.md'
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/real-cat-usage-gallery
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install -e '.[dev]'
+      - name: Recover real cat source from checked-in real-video benchmark
+        run: |
+          mkdir -p /tmp/fovea-cat
+          # docs/assets/real_demo/example1.gif is a real 3-panel benchmark. Crop its ORIGINAL left panel.
+          ffmpeg -y -loglevel error -i docs/assets/real_demo/example1.gif \
+            -vf "crop=trunc(iw/3/2)*2:trunc(ih/2)*2:0:0,fps=15" \
+            -an -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p /tmp/fovea-cat/example1_cat.mp4
+      - name: Generate every main SDK usage mode from the real cat clip
+        run: |
+          rm -rf output/gallery/example1_cat docs/assets/benchmark_gallery/example1
+          python bench/benchmark_gallery.py /tmp/fovea-cat/example1_cat.mp4 --clean
+          mkdir -p docs/assets/benchmark_gallery/example1
+          cp -R output/gallery/example1_cat/02_core_actuators docs/assets/benchmark_gallery/example1/
+          cp -R output/gallery/example1_cat/03_tile_counts docs/assets/benchmark_gallery/example1/
+          cp -R output/gallery/example1_cat/04_tile_curves docs/assets/benchmark_gallery/example1/
+          cp -R output/gallery/example1_cat/05_tile_aggregation docs/assets/benchmark_gallery/example1/
+          cp -R output/gallery/example1_cat/06_custom_policies docs/assets/benchmark_gallery/example1/
+          find docs/assets/benchmark_gallery/example1 -type f ! -name '*.gif' -delete
+      - name: Keep README assets lightweight
+        run: |
+          find docs/assets/benchmark_gallery/example1 -name '*.gif' -print0 | while IFS= read -r -d '' f; do
+            tmp="${f}.tmp.gif"
+            ffmpeg -y -loglevel error -i "$f" -filter_complex \
+              "fps=6,scale=400:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=64[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
+              -loop 0 "$tmp"
+            mv "$tmp" "$f"
+          done
+      - name: Commit real-cat gallery
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add docs/assets/benchmark_gallery/example1
+          if git diff --cached --quiet; then
+            echo 'gallery unchanged'
+            exit 0
+          fi
+          git commit -m 'docs: add real-cat SDK usage GIF gallery [skip ci]'
+          git push origin HEAD:docs/real-cat-usage-gallery
